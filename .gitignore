@@ -1,0 +1,24 @@
+# Compiled binaries
+run_nucleolus
+run_condensate
+run_hier
+run_custom
+run_polymer
+
+# Object files and dependency files
+*.o
+*.d
+obj/
+
+# Simulation output
+*_traj.txt
+*_stats.txt
+*.gif
+*.mp4
+
+# macOS
+.DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
