@@ -917,13 +917,14 @@ namespace vmmc
             }
         }
 
-        // Apply periodic boundary conditions to periodic dimensions only.
-        // Dimension 0 (x) is non-periodic (hard-wall boundary at x=0): do NOT wrap it.
-        // Wrapping x corrupts postMovePosition when large accumulated clusterPosition values
-        // push postPos[x] negative; the boundary callback (pos[0]<-0.5) already rejects those
-        // moves, but the corrupted position would then be used in reverse-link-weight computations
-        // for other particles in the same cluster, causing wrong energies and possible d=0 overlaps.
-        for (unsigned int i=1;i<dimension;i++) {
+        // Apply periodic boundary conditions.
+        // When a custom boundary callback is present (nucleolus/condensate: hard wall or open
+        // boundary at x=0/x>R), skip wrapping dimension 0 — the boundary callback handles
+        // rejection of moves that escape.  Wrapping x in that case would silently teleport
+        // particles that should be ejected, corrupting energies and cluster geometry.
+        // For a fully periodic box (no custom boundary callback), wrap all dimensions.
+        unsigned int pbcStart = callbacks.isCustomBoundary ? 1 : 0;
+        for (unsigned int i=pbcStart;i<dimension;i++) {
             if (postMoveParticle.postMovePosition[i] < 0)
                 postMoveParticle.postMovePosition[i] += boxSize[i];
             else if (postMoveParticle.postMovePosition[i] >= boxSize[i])
@@ -937,7 +938,7 @@ namespace vmmc
         {
             for (unsigned int i=0;i<dimension;i++)
                 postMoveParticle.postMovePosition[i] = round(postMoveParticle.postMovePosition[i]);
-            for (unsigned int i=1;i<dimension;i++) {
+            for (unsigned int i=pbcStart;i<dimension;i++) {
                 if (postMoveParticle.postMovePosition[i] < 0)
                     postMoveParticle.postMovePosition[i] += boxSize[i];
                 else if (postMoveParticle.postMovePosition[i] >= boxSize[i])

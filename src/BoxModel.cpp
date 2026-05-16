@@ -133,3 +133,19 @@ double BoxModel::computeEnergy(
     }
     return energy;
 }
+
+void BoxModel::applyPostMoveUpdates(
+    unsigned int particle, const double* position, const double* orientation)
+{
+    for (unsigned int i = 0; i < box.dimension; i++) {
+        particles[particle].position[i]    = position[i];
+        particles[particle].orientation[i] = orientation[i];
+    }
+    // VMMC only wraps y (i>=1) because NucleolusModel has a non-periodic x axis.
+    // BoxModel is fully periodic, so wrap x too before computing the cell index.
+    box.periodicBoundaries(particles[particle].position);
+
+    unsigned int newCell = cells.getCell(particles[particle]);
+    if (particles[particle].cell != newCell)
+        cells.updateCell(newCell, particles[particle], particles);
+}

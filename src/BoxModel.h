@@ -30,6 +30,9 @@ public:
 
     //! Override: total particle energy (calls our computePairEnergy).
     double computeEnergy(unsigned int, const double*, const double*);
+
+    //! Override: apply full periodic boundaries (including x) before cell update.
+    void applyPostMoveUpdates(unsigned int, const double*, const double*);
 };
 
 #endif /* _BOX_MODEL_H */
