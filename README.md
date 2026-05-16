@@ -204,10 +204,11 @@ step=S energy=E [phase/geometry fields]
 
 All particles remain in the system at all times. Starts with `--copies` fully assembled target complexes. No spatial gradient — coupling is spatially uniform and set by the current gamma value.
 
-Two phases (both optional):
+Three phases (all optional):
 
 | Phase | Flag | Gamma | Purpose |
 |---|---|---|---|
+| Equilibration | `--t-equil N` | 1 | Verify assembled complexes are stable at full coupling |
 | Denaturation | `--t-denat N` | 0 | Break assembled complexes apart |
 | Main | `--steps N` | 1 (or ramped if `--anneal`) | Assembly / equilibration |
 
@@ -223,6 +224,7 @@ With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at 
 |---|---|---|
 | `--steps N` | 10000 | Main-phase outer iterations |
 | `--snapshots N` | 1000 | Trajectory frames across all phases |
+| `--t-equil N` | 0 | Equilibration iterations at gamma=1 |
 | `--t-denat N` | 0 | Denaturation iterations at gamma=0 |
 | `--copies N` | 4 | Number of complex copies |
 | `--box-size L` | 20 | Square box side length (lattice units) |
@@ -236,11 +238,11 @@ With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at 
 ### Example
 
 ```bash
-# Anneal from denatured state
+# Equil then anneal from denatured state
 ./run_box \
     --copies 4     --box-size 40      \
-    --t-denat 5000 --steps 50000      \
-    --anneal       --stokes           \
+    --t-equil 5000 --t-denat 5000     \
+    --steps 50000  --anneal --stokes  \
     --phi-rot 0.2  --phi-reorient 0.2 \
     --seed 1       --output my_box
 

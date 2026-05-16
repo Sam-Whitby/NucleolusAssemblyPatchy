@@ -207,12 +207,13 @@ static void placeParticlesAssembled(vector<Particle>& particles,
 // ============================================================
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         int nCopies, double L_box,
-                        long long step, double energy, double gamma)
+                        long long step, double energy, double gamma,
+                        const string& phase = "main")
 {
     int nParticles = (int)particles.size();
     fprintf(fp, "%d\n", nParticles);
-    fprintf(fp, "step=%lld energy=%.6f gamma=%.6f L=%.1f nCopies=%d\n",
-            step, energy, gamma, L_box, nCopies);
+    fprintf(fp, "step=%lld energy=%.6f gamma=%.6f L=%.1f nCopies=%d phase=%s\n",
+            step, energy, gamma, L_box, nCopies, phase.c_str());
     for (int i = 0; i < nParticles; i++) {
         int copy  = i / N0;
         int lid   = i % N0;
@@ -234,6 +235,7 @@ int main(int argc, char* argv[])
 {
     long long nsteps    = 10000;
     long long nsnaps    = 1000;
+    long long t_equil   = 0;
     long long t_denat   = 0;
     int       nCopies   = 4;
     double    L_box     = 20.0;
@@ -247,6 +249,7 @@ int main(int argc, char* argv[])
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i],"--steps")       && i+1<argc) { nsteps      = atoll(argv[++i]); }
         else if (!strcmp(argv[i],"--snapshots")   && i+1<argc) { nsnaps      = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--t-equil")     && i+1<argc) { t_equil     = atoll(argv[++i]); }
         else if (!strcmp(argv[i],"--t-denat")     && i+1<argc) { t_denat     = atoll(argv[++i]); }
         else if (!strcmp(argv[i],"--copies")      && i+1<argc) { nCopies     = atoi(argv[++i]); }
         else if (!strcmp(argv[i],"--box-size")    && i+1<argc) { L_box       = atof(argv[++i]); }
@@ -261,23 +264,26 @@ int main(int argc, char* argv[])
         }
     }
 
-    // Snapshot intervals per phase
-    long long totalSteps    = t_denat + nsteps;
+    // Snapshot intervals distributed proportionally across all phases
+    long long totalSteps    = t_equil + t_denat + nsteps;
+    long long snaps_equil   = (totalSteps > 0 && t_equil > 0)
+                              ? max(1LL, nsnaps * t_equil / totalSteps) : 0;
     long long snaps_denat   = (totalSteps > 0 && t_denat > 0)
                               ? max(1LL, nsnaps * t_denat / totalSteps) : 0;
-    long long snaps_main    = nsnaps - snaps_denat;
+    long long snaps_main    = nsnaps - snaps_equil - snaps_denat;
     if (snaps_main < 1) snaps_main = 1;
 
     auto saveEvery = [](long long steps, long long snaps) -> long long {
         if (steps <= 0 || snaps <= 0) return steps;
         return max(1LL, steps / snaps);
     };
+    long long saveEvery_equil = saveEvery(t_equil, snaps_equil);
     long long saveEvery_denat = saveEvery(t_denat, snaps_denat);
     long long saveEvery_main  = saveEvery(nsteps,  snaps_main);
 
     cout << "=== Box Assembly Simulation (patchy model) ===" << endl;
     cout << "  steps=" << nsteps << " snapshots=" << nsnaps
-         << "  t_denat=" << t_denat
+         << "  t_equil=" << t_equil << "  t_denat=" << t_denat
          << "  copies=" << nCopies << "  box=" << L_box << "x" << L_box
          << "  anneal=" << useAnneal << " stokes=" << useStokes
          << "  phi_rot=" << phi_rot << "  phi_reorient=" << phi_reorient << endl;
@@ -392,20 +398,51 @@ int main(int argc, char* argv[])
     }
     fprintf(fp_stat, "# step  energy  acceptRatio  gamma  phase\n");
 
-    // Helper: write step-0 frame
+    // Write step-0 frame for the first active phase.
     auto writeStep0 = [&](const string& phase, double gamma) {
         model.uniformGamma = gamma;
         double initEnergy  = model.getEnergy() * nParticles;
-        writeFrame(fp_traj, particles, nCopies, L_box, 0, initEnergy, gamma);
+        writeFrame(fp_traj, particles, nCopies, L_box, 0, initEnergy, gamma, phase);
         fprintf(fp_stat, "0  %.4f  0.0000  %.4f  %s\n",
                 initEnergy, gamma, phase.c_str());
     };
 
+    {
+        double gamma0_init = (t_equil > 0) ? 1.0 :
+                             (t_denat > 0) ? 0.0 :
+                             (useAnneal)   ? 0.0 : 1.0;
+        string firstPhase  = (t_equil > 0) ? "equil" :
+                             (t_denat > 0) ? "denat" : "main";
+        writeStep0(firstPhase, gamma0_init);
+    }
+
     // ============================================================
-    //  Phase 1: Denaturation (t_denat steps at gamma=0)
+    //  Phase 1: Equilibration (t_equil steps at gamma=1)
+    // ============================================================
+    if (t_equil > 0) {
+        model.uniformGamma = 1.0;
+        vmmc.reset();
+
+        for (long long step = 1; step <= t_equil; step++) {
+            for (int k = 0; k < nParticles; k++) vmmc.step();
+
+            if (step % saveEvery_equil == 0 || step == t_equil) {
+                double energy      = model.getEnergy() * nParticles;
+                double acceptRatio = (vmmc.getAttempts() > 0)
+                                     ? (double)vmmc.getAccepts() / vmmc.getAttempts()
+                                     : 0.0;
+                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 1.0, "equil");
+                fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  equil\n",
+                        step, energy, acceptRatio, 1.0);
+                fflush(fp_stat);
+            }
+        }
+    }
+
+    // ============================================================
+    //  Phase 2: Denaturation (t_denat steps at gamma=0)
     // ============================================================
     if (t_denat > 0) {
-        writeStep0("denat", 0.0);
         model.uniformGamma = 0.0;
         vmmc.reset();
 
@@ -417,7 +454,7 @@ int main(int argc, char* argv[])
                 double acceptRatio = (vmmc.getAttempts() > 0)
                                      ? (double)vmmc.getAccepts() / vmmc.getAttempts()
                                      : 0.0;
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 0.0);
+                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 0.0, "denat");
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  denat\n",
                         step, energy, acceptRatio, 0.0);
                 fflush(fp_stat);
@@ -426,18 +463,16 @@ int main(int argc, char* argv[])
     }
 
     // ============================================================
-    //  Phase 2: Main run
+    //  Phase 3: Main run
     //    --anneal: gamma ramps linearly 0→1 over nsteps
     //    default:  gamma=1 throughout
     // ============================================================
     {
-        double gamma0 = useAnneal ? 0.0 : 1.0;
-        if (t_denat == 0) writeStep0("main", gamma0);
-        model.uniformGamma = gamma0;
+        double gamma_main0 = useAnneal ? 0.0 : 1.0;
+        model.uniformGamma = gamma_main0;
         vmmc.reset();
 
         for (long long step = 1; step <= nsteps; step++) {
-            // Update coupling before this outer iteration's moves.
             if (useAnneal && nsteps > 1)
                 model.uniformGamma = (double)(step - 1) / (double)(nsteps - 1);
             else
@@ -451,7 +486,7 @@ int main(int argc, char* argv[])
                                      ? (double)vmmc.getAccepts() / vmmc.getAttempts()
                                      : 0.0;
                 double g = model.uniformGamma;
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, g);
+                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, g, "main");
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  main\n",
                         step, energy, acceptRatio, g);
                 fflush(fp_stat);

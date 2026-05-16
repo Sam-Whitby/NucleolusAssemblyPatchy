@@ -96,6 +96,7 @@ def parse_traj(path):
         gamma   = float(_kv(hdr, 'gamma',  1.0))
         L       = float(_kv(hdr, 'L',      20.0))
         nCopies = int(_kv(hdr,   'nCopies', 4))
+        phase   = _kv(hdr, 'phase', 'main')
 
         particles = []
         for _ in range(n):
@@ -115,7 +116,7 @@ def parse_traj(path):
         if len(particles) == n:
             frames.append(dict(
                 step=step, energy=energy, gamma=gamma,
-                L=L, nCopies=nCopies, particles=particles,
+                L=L, nCopies=nCopies, phase=phase, particles=particles,
             ))
 
     return frames
@@ -345,7 +346,7 @@ def main():
                     bond_lines.append(ln)
 
         frame_text.set_text(
-            f"step {fr['step']}  E={fr['energy']:.0f}  γ={g:.3f}"
+            f"step {fr['step']}  E={fr['energy']:.0f}  γ={g:.3f}  [{fr.get('phase','main')}]"
         )
 
         s = fr['step']
