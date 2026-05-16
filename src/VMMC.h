@@ -268,7 +268,7 @@ namespace vmmc
         VMMC(unsigned int, unsigned int, double*, double, double, double, double, unsigned int, double*, bool,
 #endif
             const CallbackFunctions&, bool isLattice_ = false, int nLatticeNeighbours_ = 4,
-            double probSL_ = 0.0, int slN0_ = 1);
+            double probSL_ = 0.0, int slN0_ = 1, double probReorient_ = 0.0);
 
         //! Overloaded ++ operator. Perform a single VMMC step.
         void operator ++ (const int);
@@ -378,6 +378,10 @@ namespace vmmc
         int    slN0;                        //!< Particle-type modulus for SL (= n0, particles per complex).
         bool   isSLMove;                    //!< Whether the current step is an SL move.
         std::vector<bool> slTypeInCluster;  //!< Which particle types are already in the cluster.
+
+        // In-place single-particle reorientation move
+        double probReorient;                //!< Probability of in-place single-particle reorientation move.
+        bool   isReorientationMove;         //!< Whether the current step is a reorientation move.
 
         CallbackFunctions callbacks;                //!< Callback functions.
 

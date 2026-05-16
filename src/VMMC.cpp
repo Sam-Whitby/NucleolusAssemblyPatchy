@@ -59,7 +59,8 @@ namespace vmmc
         bool isLattice_,              // MHC
         int nLatticeNeighbours_,      // MHC
         double probSL_,
-        int slN0_):
+        int slN0_,
+        double probReorient_):
 
         nAttempts(0),
         nAccepts(0),
@@ -77,7 +78,9 @@ namespace vmmc
         nLatticeNeighbours(nLatticeNeighbours_),  // MHC
         probSL(probSL_),
         slN0(slN0_),
-        isSLMove(false)
+        isSLMove(false),
+        probReorient(probReorient_),
+        isReorientationMove(false)
     {
         // Check number of particles.
         if ((nParticles == 0) ||
@@ -406,8 +409,12 @@ namespace vmmc
         // Neighbour index (for isotropic rotations).
         unsigned int neighbour;
 
-        // Choose the move type.
-        if (rng() < probTranslate)
+        // Reset reorientation flag.
+        isReorientationMove = false;
+
+        // Choose the move type (translation / cluster rotation / in-place reorientation).
+        double r_type = rng();
+        if (r_type < probTranslate)
         {
             // Translation.
             moveParams.isRotation = false;
@@ -422,9 +429,25 @@ namespace vmmc
                 moveParams.stepSize = 1;
             }
         }
+        else if (probReorient > 0.0 && r_type < probTranslate + probReorient)
+        {
+            // In-place single-particle reorientation (no partner recruitment).
+            // The seed rotates its orientation in place; position is unchanged.
+            // This is a standard single-particle Metropolis move — no VMMC cluster building.
+            isReorientationMove = true;
+            moveParams.isRotation = true;
+            if (isLattice) {
+                static const double latticeAngles[3] = { M_PI/2.0, M_PI, 3.0*M_PI/2.0 };
+                moveParams.stepSize = latticeAngles[(int)floor(rng() * 3)];
+            } else {
+                moveParams.stepSize = maxTrialRotation*(2.0*rng()-1.0);
+            }
+            // No neighbour needed; set cutOff high so nMoving=1 never triggers early exit.
+            cutOff = nParticles;
+        }
         else
         {
-            // Rotation.
+            // Cluster rotation.
             moveParams.isRotation = true;
             if (isLattice) {
                 // MHC: on a square lattice only 90° multiples keep particles on lattice sites.
@@ -470,10 +493,15 @@ namespace vmmc
             // Check that trial move of seed hasn't triggered early exit condition.
             if (!isEarlyExit)
             {
+                if (isReorientationMove)
+                {
+                    // Single-particle in-place reorientation: no partner recruitment.
+                    // nFrustrated remains 0; accept() will apply plain Metropolis on seed's energy.
+                }
 #ifndef ISOTROPIC
-                if (isIsotropic[moveParams.seed] && moveParams.isRotation)
+                else if (isIsotropic[moveParams.seed] && moveParams.isRotation)
 #else
-                if (moveParams.isRotation)
+                else if (moveParams.isRotation)
 #endif
                 {
                     // Initialise neighbouring particle.

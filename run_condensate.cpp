@@ -31,8 +31,8 @@
     --gradient           enable radial gradient (default: g=1 everywhere)
     --stokes             enable Stokes hydrodynamic drag (D ∝ 1/R)
     --coupling  MODE     gradient coupling: product or midpoint         [product]
-    --phi-sl    φ        fraction of Saturated-Link moves               [0.2]
-    --phi-rot   φ        fraction of rotation moves                     [0.2]
+    --phi-rot      φ     fraction of cluster rotation moves             [0.2]
+    --phi-reorient φ     fraction of in-place reorientation moves       [0.2]
     --output    PREFIX   prefix for output files                        [condensate]
     --seed      S        RNG seed (0 = time-based)                     [1]
 */
@@ -555,6 +555,7 @@ int main(int argc, char** argv)
     bool      useStokes   = false;
     string    couplingStr = "product";
     double    phi_rot     = 0.2;
+    double    phi_reorient = 0.2;
     string    outPrefix   = "condensate";
     unsigned int seed     = 1;
 
@@ -569,8 +570,9 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i],"--gradient"))              { useGradient = true; }
         else if (!strcmp(argv[i],"--stokes"))                { useStokes   = true; }
         else if (!strcmp(argv[i],"--coupling") && i+1<argc) { couplingStr = argv[++i]; }
-        else if (!strcmp(argv[i],"--phi-rot")  && i+1<argc) { phi_rot   = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--output")   && i+1<argc) { outPrefix = argv[++i]; }
+        else if (!strcmp(argv[i],"--phi-rot")     && i+1<argc) { phi_rot     = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--phi-reorient")&&i+1<argc) { phi_reorient= atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--output")      && i+1<argc) { outPrefix  = argv[++i]; }
         else if (!strcmp(argv[i],"--seed")     && i+1<argc) { seed = (unsigned int)atoi(argv[++i]); }
         else {
             cerr << "Unknown argument: " << argv[i] << "\n";
@@ -608,7 +610,7 @@ int main(int argc, char** argv)
          << "  R_c=" << R_c << "  gamma0=" << gamma0
          << "  gradient=" << useGradient << " stokes=" << useStokes
          << "  coupling=" << couplingStr
-         << "  phi_rot=" << phi_rot << "  phi_sl=0 (disabled)" << endl;
+         << "  phi_rot=" << phi_rot << "  phi_reorient=" << phi_reorient << endl;
 
     const int    nParticles = nCopies * N0;
     const double J          = 8.0;
@@ -682,8 +684,8 @@ int main(int argc, char** argv)
     }
 
     double maxTrialTranslation = 1.5;
-    double maxTrialRotation    = (phi_rot > 0.0) ? M_PI : 0.0;
-    double probTranslate       = 1.0 - phi_rot;
+    double maxTrialRotation    = (phi_rot > 0.0 || phi_reorient > 0.0) ? M_PI : 0.0;
+    double probTranslate       = 1.0 - phi_rot - phi_reorient;
     double referenceRadius     = 0.5;
     bool   isRepulsive         = true;
     int    nLatticeNeighbours  = 8;
@@ -750,7 +752,7 @@ int main(int argc, char** argv)
                      probTranslate, referenceRadius,
                      maxInteractions, &boxSize[0], isIsotropic.get(), isRepulsive,
                      callbacks, isLattice, nLatticeNeighbours,
-                     0.0 /*phi_sl: disabled in patchy model*/, N0);
+                     0.0 /*phi_sl: disabled in patchy model*/, N0, phi_reorient);
 
     vmmc.hydrAlpha = useStokes ? 1.0 : 0.0;
     if (seed != 0) vmmc.rng.setSeed(seed);

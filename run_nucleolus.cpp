@@ -556,6 +556,7 @@ int main(int argc, char** argv)
     bool useGradient    = false;
     bool useStokes      = false;
     double phi_rot      = 0.2;
+    double phi_reorient = 0.2;
     string outPrefix    = "nucleolus";
     unsigned int seed   = 1;  // default non-zero → always deterministic
 
@@ -567,8 +568,9 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i],"--width")     && i+1<argc) { W         = atoi(argv[++i]); }
         else if (!strcmp(argv[i],"--gradient"))               { useGradient = true; }
         else if (!strcmp(argv[i],"--stokes"))                 { useStokes   = true; }
-        else if (!strcmp(argv[i],"--phi-rot")   && i+1<argc) { phi_rot   = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--output")    && i+1<argc) { outPrefix = argv[++i]; }
+        else if (!strcmp(argv[i],"--phi-rot")      && i+1<argc) { phi_rot     = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--phi-reorient") && i+1<argc) { phi_reorient= atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--output")       && i+1<argc) { outPrefix   = argv[++i]; }
         else if (!strcmp(argv[i],"--seed")      && i+1<argc) { seed      = (unsigned int)atoi(argv[++i]); }
         else {
             cerr << "Unknown argument: " << argv[i] << "\n"
@@ -586,7 +588,7 @@ int main(int argc, char** argv)
          << " (every " << saveEvery << " steps)"
          << "  L=" << L_col << " W=" << W
          << "  gradient=" << useGradient << " stokes=" << useStokes
-         << "  phi_rot=" << phi_rot << "  phi_sl=0 (disabled)" << endl;
+         << "  phi_rot=" << phi_rot << "  phi_reorient=" << phi_reorient << endl;
 
     // --- Parameters ---
     const int    nCopies    = 4;
@@ -668,8 +670,8 @@ int main(int argc, char** argv)
     }
 
     double maxTrialTranslation = 1.5;
-    double maxTrialRotation    = (phi_rot > 0.0) ? M_PI : 0.0;
-    double probTranslate       = 1.0 - phi_rot;
+    double maxTrialRotation    = (phi_rot > 0.0 || phi_reorient > 0.0) ? M_PI : 0.0;
+    double probTranslate       = 1.0 - phi_rot - phi_reorient;
     double referenceRadius     = 0.5;
     bool   isRepulsive         = true;
     int    nLatticeNeighbours  = 8;   // 8 directions (including diagonals)
@@ -696,7 +698,7 @@ int main(int argc, char** argv)
                      probTranslate, referenceRadius,
                      maxInteractions, &boxSize[0], isIsotropic, isRepulsive,
                      callbacks, isLattice, nLatticeNeighbours,
-                     0.0 /*phi_sl: disabled in patchy model*/, N0);
+                     0.0 /*phi_sl: disabled in patchy model*/, N0, phi_reorient);
 
     // Stokes: set hydrAlpha = 0 to disable (unit diffusion), 1 to enable
     vmmc.hydrAlpha = useStokes ? 1.0 : 0.0;
