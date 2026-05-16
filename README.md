@@ -251,6 +251,20 @@ With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at 
     --seed 1       --output equil_box
 ```
 
+### Visualisation
+
+```bash
+python3 visualize_box.py my_box_traj.txt
+python3 visualize_box.py my_box_traj.txt --output my_box.mp4 --fps 10
+```
+
+The left panel shows particles in the periodic square box.  The box background
+colour is a uniform blue tint whose intensity tracks the current coupling
+strength γ: dark blue (γ≈0, denaturing) → light blue (γ=1, fully coupled).
+The top-right panel shows energy vs step; the bottom-right shows γ vs step
+(useful for `--anneal` runs) with the VMMC acceptance ratio overlaid if a
+stats file is present (auto-detected as `PREFIX_stats.txt`).
+
 ---
 
 ## Source layout
@@ -258,8 +272,10 @@ With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at 
 ```
 run_nucleolus.cpp          Column model driver
 run_condensate.cpp         Circular model driver
+run_box.cpp                Periodic box driver
 visualize_nucleolus.py     Column model visualiser
 visualize_condensate.py    Circular model visualiser
+visualize_box.py           Periodic box visualiser
 src/
   VMMC.h / VMMC.cpp        Core VMMC algorithm (cluster translation, rotation, reorientation)
   NucleolusModel.h / .cpp  Column geometry
