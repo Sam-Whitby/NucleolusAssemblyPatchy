@@ -853,8 +853,13 @@ namespace vmmc
                 postMoveParticle.postMovePosition[i] += v2[i];
 
 #ifndef ISOTROPIC
-            // Only update orientations for anisotropic particles.
-            if (!isIsotropic[particle])
+            // Update orientations for anisotropic particles OR during any rotation move.
+            // For lattice patch models, rigid-body cluster rotations must carry the orientation
+            // vector with them so patch directions stay in the correct body frame.  Without this,
+            // isIsotropic=true particles (which use the correct neighbour-seeded cluster path)
+            // would rotate their positions but leave orientations frozen, making patch-gated
+            // contacts depend on stale pre-rotation orientations after acceptance.
+            if (!isIsotropic[particle] || moveParams.isRotation)
             {
                 // Calculate orientation rotation vector.
                 if (is3D) rotate3D(postMoveParticle.postMoveOrientation, moveParams.trialVector, v2, direction*moveParams.stepSize);

@@ -664,7 +664,7 @@ int main(int argc, char** argv)
         coordinates[2*i + 1] = particles[i].position[1];
         orientations[2*i]     = 1.0;
         orientations[2*i + 1] = 0.0;
-        isIsotropic[i]        = false;  // orientation updated by VMMC rotation moves
+        isIsotropic[i]        = true;   // use isotropic cluster-rotation path; orientations updated via VMMC.cpp patch
     }
 
     double maxTrialTranslation = 1.5;
