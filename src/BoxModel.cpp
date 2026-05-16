@@ -93,8 +93,34 @@ double BoxModel::computePairEnergy(
             energy += interactions.crosstalk;
 
         bool isBackbone = (backbone != Neighbours::cNone);
-        if ((isBackbone || !sameChain) && !interactions.weakD1.empty())
-            energy += g * interactions.weakD1[id1][id2];
+        if (!interactions.weakD1.empty()) {
+            bool patchOk = true;
+            if (!isBackbone && interactions.patchesEnabled && !interactions.patchSlots.empty()) {
+                // Direction from p1 to p2 in world frame.
+                int dx12 = (int)round(-sep[0]);
+                int dy12 = (int)round(-sep[1]);
+                // Rotate into p1's local frame (R^{-T} where R maps local→world).
+                int lx1 = (int)round( dx12 * orientation1[0] + dy12 * orientation1[1]);
+                int ly1 = (int)round(-dx12 * orientation1[1] + dy12 * orientation1[0]);
+                // Direction from p2 to p1, rotated into p2's local frame.
+                int lx2 = (int)round(-dx12 * orientation2[0] - dy12 * orientation2[1]);
+                int ly2 = (int)round( dx12 * orientation2[1] - dy12 * orientation2[0]);
+                auto toSlot = [](int lx, int ly) -> int {
+                    if (lx== 1&&ly== 0) return 0;
+                    if (lx== 0&&ly== 1) return 1;
+                    if (lx==-1&&ly== 0) return 2;
+                    if (lx== 0&&ly==-1) return 3;
+                    return -1;
+                };
+                int s1 = toSlot(lx1, ly1);
+                int s2 = toSlot(lx2, ly2);
+                patchOk = (s1 >= 0 && s2 >= 0 &&
+                           interactions.patchSlots[id1][s1] &&
+                           interactions.patchSlots[id2][s2]);
+            }
+            if (isBackbone || (!sameChain && patchOk))
+                energy += g * interactions.weakD1[id1][id2];
+        }
 
     } else if (normSqd < 2.0 + TOL) {
         double backbone = interactions.east[particle1].getVal(particle2);
