@@ -46,6 +46,7 @@
 #include <vector>
 #include <set>
 #include <algorithm>
+#include <array>
 
 #include "Demo.h"
 #include "VMMC.h"
@@ -112,23 +113,15 @@ inline double targetDistSqd(int id1, int id2) {
 }
 
 // ============================================================
-//  Build coupling matrices (16×16, indexed by local particle id)
-//  Following Eq. repulsive_total_eq2 with J=8, eps=0.5:
+//  Build coupling matrices (patchy model).
 //
-//  weakD1[id1][id2]   (d=1):
-//    same polymer type → -J (repulsive)
-//    cross-type Gō d=1 neighbours → +J (attractive)
-//
-//  weakDsq2[id1][id2] (d=√2):
-//    same polymer type → -J
-//    cross-type Gō d=√2 neighbours → eps*J
-//
-//  weakD2[id1][id2]   (d=2):
-//    same polymer type → -eps*J
-//    otherwise 0
+//  Only cross-type d=1 pairs are attractive; all other entries are zero.
+//  Same-type repulsions removed: hard-core excluded volume handles overlap.
+//  d=√2 cross-type contacts removed: not gateable by the patch system and
+//  would create ungated inter-complex attraction between assembled complexes.
 // ============================================================
 static void buildCouplingMatrices(
-    double J, double eps,
+    double J,
     vector<vector<double>>& wD1,
     vector<vector<double>>& wDsq2,
     vector<vector<double>>& wD2,
@@ -141,29 +134,47 @@ static void buildCouplingMatrices(
 
     for (int i = 0; i < N0; i++) {
         for (int j = 0; j < N0; j++) {
-            if (i == j) continue;  // handled implicitly (same particle = hard core only)
-
-            bool sameType = (polyType(i) == polyType(j));
+            if (i == j) continue;
+            if (polyType(i) == polyType(j)) continue;  // same-type: no interaction
             double dsqd = targetDistSqd(i, j);
-
-            if (sameType) {
-                // Repulsion between same polymer-type particles (Eq. repulsive_total_eq2, δ_ij=1)
-                wD1[i][j]   = -J;
-                wDsq2[i][j] = -J;
-                wD2[i][j]   = -eps * J;
-            } else {
-                // Attractive Gō bonds for cross-type particles that are neighbours in T
-                if (dsqd < 1.0 + TOL) {
-                    // d=1 neighbour in T
-                    wD1[i][j] = J;
-                } else if (dsqd < 2.0 + TOL) {
-                    // d=√2 neighbour in T
-                    wDsq2[i][j] = eps * J;
-                }
-                // No attractive coupling for d=2 or beyond in T
-            }
+            if (dsqd < 1.0 + TOL)
+                wD1[i][j] = J;  // attractive at d=1, gated by patch alignment
+            // d=sqrt(2) cross-type contacts intentionally omitted
         }
     }
+}
+
+// ============================================================
+//  Build patch slot map for all 16 particle identities.
+//
+//  For each particle i, activate a patch on the face pointing toward each
+//  cross-type native d=1 contact partner j in TARGET.
+//  All particles start at orientation (1,0), so local frame = world frame:
+//    slot 0 = world-east (+x), 1 = world-north (+y),
+//    2 = world-west (-x),      3 = world-south (-y).
+// ============================================================
+static vector<array<bool,4>> buildPatchSlots()
+{
+    vector<array<bool,4>> slots(N0);
+    for (auto& s : slots) s.fill(false);
+
+    for (int i = 0; i < N0; i++) {
+        for (int j = 0; j < N0; j++) {
+            if (i == j) continue;
+            if (polyType(i) == polyType(j)) continue;
+            double dsqd = targetDistSqd(i, j);
+            if (dsqd > 1.0 + 1e-6) continue;
+            int dx = TARGET_X[j] - TARGET_X[i];
+            int dy = TARGET_Y[j] - TARGET_Y[i];
+            int slot = -1;
+            if      (dx ==  1 && dy ==  0) slot = 0;  // east
+            else if (dx ==  0 && dy ==  1) slot = 1;  // north
+            else if (dx == -1 && dy ==  0) slot = 2;  // west
+            else if (dx ==  0 && dy == -1) slot = 3;  // south
+            if (slot >= 0) slots[i][slot] = true;
+        }
+    }
+    return slots;
 }
 
 // ============================================================
@@ -321,17 +332,19 @@ static bool replacementPlacement(
 
 // ============================================================
 //  Reference energy of one perfectly assembled target complex (g = 1).
-//  See run_condensate.cpp for derivation.
+//
+//  Patchy model: backbone bonds = -bbEnergy each (no same-type weakD1),
+//  12 cross-type d=1 native contacts = -J each, d=√2 contacts removed.
 // ============================================================
-static double referenceComplexEnergy(double J, double eps, double bbEnergy)
+static double referenceComplexEnergy(double J, double bbEnergy)
 {
-    double E = (double)N_BB_PAIRS * -(bbEnergy - J);
+    double E = (double)N_BB_PAIRS * -bbEnergy;
     for (int i = 0; i < N0; i++) {
         for (int j = i+1; j < N0; j++) {
             if (polyType(i) == polyType(j)) continue;
             double dsqd = targetDistSqd(i, j);
-            if      (dsqd < 1.0 + 1e-6) E -= J;
-            else if (dsqd < 2.0 + 1e-6) E -= eps * J;
+            if (dsqd < 1.0 + 1e-6) E -= J;
+            // d=sqrt(2) contacts removed from patchy model
         }
     }
     return E;
@@ -469,7 +482,8 @@ static int checkAndReplace(NucleolusModel& model,
 //  Write one frame to trajectory file (extended XYZ format).
 //  Header line 2 carries step, energy, cumulative exit count, and box params
 //  so that the visualizer can plot scalar time-series without a separate file.
-//  Columns: particle_id  polymer_type  x  y  copy
+//  Columns: particle_id  polymer_type  x  y  copy  ox  oy
+//    ox, oy: orientation unit vector (rotates with particle during VMMC moves)
 // ============================================================
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         int nCopies, double L_col, double W,
@@ -483,11 +497,13 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
         int copy  = i / N0;
         int lid   = i % N0;
         int ptype = polyType(lid);
-        fprintf(fp, "%d %d %.4f %.4f %d\n",
+        fprintf(fp, "%d %d %.4f %.4f %d %.4f %.4f\n",
                 i, ptype,
                 particles[i].position[0],
                 particles[i].position[1],
-                copy);
+                copy,
+                particles[i].orientation[0],
+                particles[i].orientation[1]);
     }
 }
 
@@ -539,7 +555,6 @@ int main(int argc, char** argv)
     int  W              = 10;
     bool useGradient    = false;
     bool useStokes      = false;
-    double phi_sl       = 0.2;
     double phi_rot      = 0.2;
     string outPrefix    = "nucleolus";
     unsigned int seed   = 1;  // default non-zero → always deterministic
@@ -552,7 +567,6 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i],"--width")     && i+1<argc) { W         = atoi(argv[++i]); }
         else if (!strcmp(argv[i],"--gradient"))               { useGradient = true; }
         else if (!strcmp(argv[i],"--stokes"))                 { useStokes   = true; }
-        else if (!strcmp(argv[i],"--phi-sl")    && i+1<argc) { phi_sl    = atof(argv[++i]); }
         else if (!strcmp(argv[i],"--phi-rot")   && i+1<argc) { phi_rot   = atof(argv[++i]); }
         else if (!strcmp(argv[i],"--output")    && i+1<argc) { outPrefix = argv[++i]; }
         else if (!strcmp(argv[i],"--seed")      && i+1<argc) { seed      = (unsigned int)atoi(argv[++i]); }
@@ -567,18 +581,17 @@ int main(int argc, char** argv)
     // Interval between saved frames (save every saveEvery steps, plus step 0)
     long long saveEvery = (nsnaps <= 1) ? nsteps : max(1LL, nsteps / (nsnaps - 1));
 
-    cout << "=== Nucleolus Assembly Simulation ===" << endl;
+    cout << "=== Nucleolus Assembly Simulation (patchy model) ===" << endl;
     cout << "  steps=" << nsteps << " snapshots=" << nsnaps
          << " (every " << saveEvery << " steps)"
          << "  L=" << L_col << " W=" << W
          << "  gradient=" << useGradient << " stokes=" << useStokes
-         << "  phi_sl=" << phi_sl << " phi_rot=" << phi_rot << endl;
+         << "  phi_rot=" << phi_rot << "  phi_sl=0 (disabled)" << endl;
 
     // --- Parameters ---
     const int    nCopies    = 4;
     const int    nParticles = nCopies * N0;
     const double J          = 8.0;
-    const double eps        = 0.5;
     const double bbEnergy   = 1000.0;   // backbone bond strength (effective ∞)
     const double X_MAX      = (double)(max(5 * L_col, 300)); // effective box x size
 
@@ -590,7 +603,7 @@ int main(int argc, char** argv)
 
     // --- Build coupling matrices ---
     vector<vector<double>> wD1, wDsq2, wD2, wDsq5;
-    buildCouplingMatrices(J, eps, wD1, wDsq2, wD2, wDsq5);
+    buildCouplingMatrices(J, wD1, wDsq2, wD2, wDsq5);
 
     // --- Build backbone Triples ---
     vector<Triple> north0, east0;
@@ -608,6 +621,11 @@ int main(int argc, char** argv)
     Interactions interactions(nParticles, N0, north, east,
                                wD1, wDsq2, wD2, wDsq5,
                                springK, bbPartners);
+
+    // Directional patches: body-frame sticky faces toward native d=1 cross-type partners.
+    auto patchSlots = buildPatchSlots();
+    interactions.patchesEnabled = true;
+    interactions.patchSlots     = patchSlots;
 
     // --- Simulation box ---
     // x: non-periodic (hard wall at x=0 via boundary callback)
@@ -631,7 +649,7 @@ int main(int argc, char** argv)
                           interactions, (double)L_col, useGradient);
 
     // Reference energy of one perfect complex (g=1, native geometry).
-    const double refComplexEnergy = referenceComplexEnergy(J, eps, bbEnergy);
+    const double refComplexEnergy = referenceComplexEnergy(J, bbEnergy);
     cout << "Reference perfect-complex energy (g=1): " << refComplexEnergy << endl;
 
     // --- Place particles as denatured linear polymers near x=0 ---
@@ -646,7 +664,7 @@ int main(int argc, char** argv)
         coordinates[2*i + 1] = particles[i].position[1];
         orientations[2*i]     = 1.0;
         orientations[2*i + 1] = 0.0;
-        isIsotropic[i]        = true;
+        isIsotropic[i]        = false;  // orientation updated by VMMC rotation moves
     }
 
     double maxTrialTranslation = 1.5;
@@ -678,7 +696,7 @@ int main(int argc, char** argv)
                      probTranslate, referenceRadius,
                      maxInteractions, &boxSize[0], isIsotropic, isRepulsive,
                      callbacks, isLattice, nLatticeNeighbours,
-                     phi_sl, N0 /*slN0: particle type period*/);
+                     0.0 /*phi_sl: disabled in patchy model*/, N0);
 
     // Stokes: set hydrAlpha = 0 to disable (unit diffusion), 1 to enable
     vmmc.hydrAlpha = useStokes ? 1.0 : 0.0;

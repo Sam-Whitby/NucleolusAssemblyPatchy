@@ -222,97 +222,39 @@ simplified to `referenceComplexEnergy(double J, double bbEnergy)`.
 
 ## Code Changes: File by File
 
-### 1. `run_condensate.cpp`
+### 1. `run_condensate.cpp` ✅ DONE
 
-#### a. `buildCouplingMatrices` (lines ~160–190)
-Replace the matrix construction logic as shown in the section above.
+#### a. `buildCouplingMatrices` — replaced with patchy version ✅
+Only cross-type d=1 pairs set to J; same-type repulsions and d=√2 contacts removed.
 
-#### b. Add `buildPatchSlots` function (after `buildCouplingMatrices`)
+#### b. `buildPatchSlots` function added (after `buildCouplingMatrices`) ✅
+Activates body-frame patches toward native d=1 cross-type partners.
 
-```cpp
-static vector<array<bool,4>> buildPatchSlots()
-{
-    // For each particle identity, activate patches on faces pointing toward
-    // cross-type (different polymer) native d=1 contact partners in TARGET.
-    // All particles initialised with orientation (1,0), so local frame = world frame:
-    //   slot 0 = world-east (+x), slot 1 = world-north (+y),
-    //   slot 2 = world-west (-x), slot 3 = world-south (-y).
-    vector<array<bool,4>> slots(N0);
-    for (auto& s : slots) s.fill(false);
-
-    for (int i = 0; i < N0; i++) {
-        for (int j = 0; j < N0; j++) {
-            if (i == j) continue;
-            if (polyType(i) == polyType(j)) continue;  // same-type: no patch
-            double dsqd = targetDistSqd(i, j);
-            if (dsqd > 1.0 + 1e-6) continue;           // not a native d=1 contact
-            // Direction from i to j in world frame
-            int dx = TARGET_X[j] - TARGET_X[i];
-            int dy = TARGET_Y[j] - TARGET_Y[i];
-            // Map to slot (with ori=(1,0), local = world):
-            // E=(1,0)→0, N=(0,1)→1, W=(-1,0)→2, S=(0,-1)→3
-            int slot = -1;
-            if      (dx ==  1 && dy ==  0) slot = 0;
-            else if (dx ==  0 && dy ==  1) slot = 1;
-            else if (dx == -1 && dy ==  0) slot = 2;
-            else if (dx ==  0 && dy == -1) slot = 3;
-            if (slot >= 0) slots[i][slot] = true;
-        }
-    }
-    return slots;
-}
-```
-
-#### c. Enable patches in `Interactions` setup (after `buildCouplingMatrices` call, before VMMC)
-
+#### c. Patches enabled in `Interactions` setup ✅
 ```cpp
 auto patchSlots = buildPatchSlots();
 interactions.patchesEnabled = true;
 interactions.patchSlots = patchSlots;
 ```
 
-#### d. Set `isIsotropic = false` for all particles (line ~642)
+#### d. `isIsotropic = false` for all particles ✅
 
+#### e. `--phi-sl` argument removed; SL moves hardcoded to 0.0 ✅
+
+#### f. `referenceComplexEnergy` updated (eps removed, backbone = -bbEnergy) ✅
+
+#### g. `referenceComplexEnergy` call updated ✅
 ```cpp
-// Change:
-isIsotropic[i] = true;
-// To:
-isIsotropic[i] = false;   // orientation updated by VMMC rotation moves
-```
-
-#### e. Disable saturated linking
-
-```cpp
-// Change:
-double phi_sl = 0.2;
-// To:
-double phi_sl = 0.0;      // disabled: no saturated-link moves in patchy model
-```
-
-Also remove or comment out the `--phi-sl` argument parser, or keep it as a no-op.
-
-#### f. Update `referenceComplexEnergy`
-
-Remove `eps` parameter; update the loop as shown in the section above.
-
-#### g. Update the `referenceComplexEnergy` call in `main()`
-
-```cpp
-// Change:
-const double refComplexEnergy = referenceComplexEnergy(J, eps, bbEnergy);
-// To:
 const double refComplexEnergy = referenceComplexEnergy(J, bbEnergy);
 ```
 
-#### h. Remove `eps` from `Interactions` constructor call where only `wD1` is non-zero
+#### h. `eps` removed from parameters and `buildCouplingMatrices` signature ✅
 
-Since `wDsq2`, `wD2`, `wDsq5` are now all-zero, they can still be passed (the
-constructor accepts them) — just ensure they are populated correctly by `buildCouplingMatrices`.
+#### i. Orientation (ox, oy) written to trajectory ✅ (additional to plan)
 
-### 2. `run_nucleolus.cpp`
+### 2. `run_nucleolus.cpp` ✅ DONE
 
-Identical changes to items a–h above, adapted for the column model (`NucleolusModel` instead
-of `CondensateModel`, `L_col` geometry, `checkAndReplace` instead of `handleExitsAndQueue`).
+Identical changes a–i applied. ✅
 
 ### 3. `src/StickySquare.cpp`
 
@@ -426,9 +368,10 @@ All changed code is in `run_condensate.cpp`, `run_nucleolus.cpp`, and the unchan
 
 ## Verification
 
-1. **Single assembled complex**: Run with `--copies 1 --steps 0 --snapshots 1`. Check that the
-   reported system energy matches E_ref = −12,096. With patches enabled and all particles at
-   orientation (1,0), all 12 patch pairs should be active.
+1. **Single assembled complex** ✅ **VERIFIED**
+   Run `--copies 1 --steps 0 --snapshots 1` on `run_condensate`.
+   Reported system energy = **−12096.0000**, matching E_ref = −12,096 exactly.
+   All 12 patch pairs are active at orientation (1,0).
 
 2. **Two complexes, no aggregation**: Run with `--copies 2 --t-equil 0 --t-denat 0`. After
    equilibration, two fully-assembled complexes should diffuse independently with zero
@@ -441,7 +384,7 @@ All changed code is in `run_condensate.cpp`, `run_nucleolus.cpp`, and the unchan
    slow, increase phi_rot (see rotation_report.md for SED-motivated value of ≈ 0.43).
 
 4. **Backbone integrity**: Confirm that no backbone bonds break during simulation (energy jumps
-   of +992 or +1000 in the stats file). The existing detection code in run_condensate.cpp
+   of +1000 in the stats file). The existing detection code in run_nucleolus.cpp
    reports backbone violations; there should be none.
 
 5. **Patch orientation test**: Place two particles (cross-type, native d=1 partners) at d=1

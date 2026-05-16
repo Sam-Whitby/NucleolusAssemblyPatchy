@@ -52,6 +52,7 @@
 #include <set>
 #include <queue>
 #include <algorithm>
+#include <array>
 
 #include "Demo.h"
 #include "VMMC.h"
@@ -114,23 +115,24 @@ inline double targetDistSqd(int id1, int id2) {
 // ============================================================
 //  Reference energy of one perfectly assembled target complex (g = 1).
 //
-//  Contributions:
-//   - N_BB_PAIRS backbone bonds at d=1:  -(bbEnergy - J) each
-//     (backbone term + same-type weakD1 term at g=1)
-//   - Cross-polymer Gō contacts at d=1:  -J each
-//   - Cross-polymer Gō contacts at d=√2: -eps*J each
-//   - Same-chain non-backbone pairs: suppressed by sameChain guard → 0
-//   - crosstalk = 0 → no contribution
+//  Patchy model contributions:
+//   - N_BB_PAIRS backbone bonds at d=1:  -bbEnergy each
+//     (same-type weakD1 is now 0, so backbone = -bbEnergy exactly)
+//   - 12 cross-polymer d=1 native contacts: -J each (patch-gated)
+//   - d=√2 cross-type contacts removed from model
+//   - crosstalk = 0, same-type repulsions removed → 0
 // ============================================================
-static double referenceComplexEnergy(double J, double eps, double bbEnergy)
+static double referenceComplexEnergy(double J, double bbEnergy)
 {
-    double E = (double)N_BB_PAIRS * -(bbEnergy - J);
+    // 12 backbone bonds at -bbEnergy each (no same-type weakD1 correction)
+    double E = (double)N_BB_PAIRS * -bbEnergy;
+    // 12 cross-type d=1 native contacts at -J each
     for (int i = 0; i < N0; i++) {
         for (int j = i+1; j < N0; j++) {
             if (polyType(i) == polyType(j)) continue;
             double dsqd = targetDistSqd(i, j);
-            if      (dsqd < 1.0 + 1e-6) E -= J;
-            else if (dsqd < 2.0 + 1e-6) E -= eps * J;
+            if (dsqd < 1.0 + 1e-6) E -= J;
+            // d=sqrt(2) contacts removed from patchy model
         }
     }
     return E;
@@ -155,10 +157,15 @@ static double componentPairEnergy(CondensateModel& model,
 }
 
 // ============================================================
-//  Build coupling matrices (16×16, same as column model)
+//  Build coupling matrices (patchy model).
+//
+//  Only cross-type d=1 pairs are attractive; all other entries are zero.
+//  Same-type repulsions removed: hard-core excluded volume handles overlap.
+//  d=√2 cross-type contacts removed: not gateable by the patch system and
+//  would create ungated inter-complex attraction between assembled complexes.
 // ============================================================
 static void buildCouplingMatrices(
-    double J, double eps,
+    double J,
     vector<vector<double>>& wD1,
     vector<vector<double>>& wDsq2,
     vector<vector<double>>& wD2,
@@ -172,21 +179,46 @@ static void buildCouplingMatrices(
     for (int i = 0; i < N0; i++) {
         for (int j = 0; j < N0; j++) {
             if (i == j) continue;
-            bool sameType = (polyType(i) == polyType(j));
+            if (polyType(i) == polyType(j)) continue;  // same-type: no interaction
             double dsqd = targetDistSqd(i, j);
-
-            if (sameType) {
-                wD1[i][j]   = -J;
-                wDsq2[i][j] = -J;
-                wD2[i][j]   = -eps * J;
-            } else {
-                if (dsqd < 1.0 + TOL)
-                    wD1[i][j] = J;
-                else if (dsqd < 2.0 + TOL)
-                    wDsq2[i][j] = eps * J;
-            }
+            if (dsqd < 1.0 + TOL)
+                wD1[i][j] = J;  // attractive at d=1, gated by patch alignment
+            // d=sqrt(2) cross-type contacts intentionally omitted
         }
     }
+}
+
+// ============================================================
+//  Build patch slot map for all 16 particle identities.
+//
+//  For each particle i, activate a patch on the face pointing toward each
+//  cross-type native d=1 contact partner j in TARGET.
+//  All particles start at orientation (1,0), so local frame = world frame:
+//    slot 0 = world-east (+x), 1 = world-north (+y),
+//    2 = world-west (-x),      3 = world-south (-y).
+// ============================================================
+static vector<array<bool,4>> buildPatchSlots()
+{
+    vector<array<bool,4>> slots(N0);
+    for (auto& s : slots) s.fill(false);
+
+    for (int i = 0; i < N0; i++) {
+        for (int j = 0; j < N0; j++) {
+            if (i == j) continue;
+            if (polyType(i) == polyType(j)) continue;
+            double dsqd = targetDistSqd(i, j);
+            if (dsqd > 1.0 + 1e-6) continue;
+            int dx = TARGET_X[j] - TARGET_X[i];
+            int dy = TARGET_Y[j] - TARGET_Y[i];
+            int slot = -1;
+            if      (dx ==  1 && dy ==  0) slot = 0;  // east
+            else if (dx ==  0 && dy ==  1) slot = 1;  // north
+            else if (dx == -1 && dy ==  0) slot = 2;  // west
+            else if (dx ==  0 && dy == -1) slot = 3;  // south
+            if (slot >= 0) slots[i][slot] = true;
+        }
+    }
+    return slots;
 }
 
 // ============================================================
@@ -475,6 +507,8 @@ static void tryInjectNext(
 //  Write one frame to trajectory file.
 //  Header carries: step, energy (excluding core), exited count,
 //                  R_c, cx, cy, nCopies, coupling mode.
+//  Particle rows: id poly_type x y copy ox oy
+//    ox, oy: orientation unit vector (rotates with particle during VMMC moves)
 // ============================================================
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         int nCopies, double R_c, double cx, double cy,
@@ -494,11 +528,13 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
         int copy  = i / N0;
         int lid   = i % N0;
         int ptype = polyType(lid);
-        fprintf(fp, "%d %d %.4f %.4f %d\n",
+        fprintf(fp, "%d %d %.4f %.4f %d %.4f %.4f\n",
                 i, ptype,
                 particles[i].position[0],
                 particles[i].position[1],
-                copy);
+                copy,
+                particles[i].orientation[0],
+                particles[i].orientation[1]);
     }
 }
 
@@ -518,7 +554,6 @@ int main(int argc, char** argv)
     bool      useGradient = false;
     bool      useStokes   = false;
     string    couplingStr = "product";
-    double    phi_sl      = 0.2;
     double    phi_rot     = 0.2;
     string    outPrefix   = "condensate";
     unsigned int seed     = 1;
@@ -534,7 +569,6 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i],"--gradient"))              { useGradient = true; }
         else if (!strcmp(argv[i],"--stokes"))                { useStokes   = true; }
         else if (!strcmp(argv[i],"--coupling") && i+1<argc) { couplingStr = argv[++i]; }
-        else if (!strcmp(argv[i],"--phi-sl")   && i+1<argc) { phi_sl    = atof(argv[++i]); }
         else if (!strcmp(argv[i],"--phi-rot")  && i+1<argc) { phi_rot   = atof(argv[++i]); }
         else if (!strcmp(argv[i],"--output")   && i+1<argc) { outPrefix = argv[++i]; }
         else if (!strcmp(argv[i],"--seed")     && i+1<argc) { seed = (unsigned int)atoi(argv[++i]); }
@@ -568,17 +602,16 @@ int main(int argc, char** argv)
     long long saveEvery_denat = saveEvery(t_denat, snaps_denat);
     long long saveEvery_main  = saveEvery(nsteps,  snaps_main);
 
-    cout << "=== Circular Condensate Assembly Simulation ===" << endl;
+    cout << "=== Circular Condensate Assembly Simulation (patchy model) ===" << endl;
     cout << "  copies=" << nCopies
          << "  t_equil=" << t_equil << " t_denat=" << t_denat << " steps=" << nsteps
          << "  R_c=" << R_c << "  gamma0=" << gamma0
          << "  gradient=" << useGradient << " stokes=" << useStokes
          << "  coupling=" << couplingStr
-         << "  phi_sl=" << phi_sl << " phi_rot=" << phi_rot << endl;
+         << "  phi_rot=" << phi_rot << "  phi_sl=0 (disabled)" << endl;
 
     const int    nParticles = nCopies * N0;
     const double J          = 8.0;
-    const double eps        = 0.5;
     const double bbEnergy   = 1000.0;
 
     const double R_large = max(6.0 * R_c, 150.0);
@@ -593,7 +626,7 @@ int main(int argc, char** argv)
     const bool   isLattice             = true;
 
     vector<vector<double>> wD1, wDsq2, wD2, wDsq5;
-    buildCouplingMatrices(J, eps, wD1, wDsq2, wD2, wDsq5);
+    buildCouplingMatrices(J, wD1, wDsq2, wD2, wDsq5);
 
     vector<Triple> north0, east0;
     buildBackboneTriples(nCopies, bbEnergy, north0, east0);
@@ -604,6 +637,12 @@ int main(int argc, char** argv)
     Interactions interactions(nParticles, N0, north0, east0,
                                wD1, wDsq2, wD2, wDsq5,
                                springK, bbPartners);
+
+    // Directional patches: each particle has body-frame sticky faces pointing
+    // only toward native d=1 cross-type partners in the target complex.
+    auto patchSlots = buildPatchSlots();
+    interactions.patchesEnabled = true;
+    interactions.patchSlots     = patchSlots;
 
     vector<double> boxSize    = { BOX, BOX };
     vector<bool>   isPeriodic = { false, false };
@@ -626,7 +665,7 @@ int main(int argc, char** argv)
     placeParticlesTargetComplex(particles, cells, box, nCopies, cx, cy);
 
     // Reference energy of one perfect complex (g=1, native geometry).
-    const double refComplexEnergy = referenceComplexEnergy(J, eps, bbEnergy);
+    const double refComplexEnergy = referenceComplexEnergy(J, bbEnergy);
     cout << "Reference perfect-complex energy (g=1): " << refComplexEnergy << endl;
 
     // VMMC setup — use vectors for VLA-safety with runtime nParticles.
@@ -639,7 +678,7 @@ int main(int argc, char** argv)
         coordinates[2*i+1] = particles[i].position[1];
         orientations[2*i]   = 1.0;
         orientations[2*i+1] = 0.0;
-        isIsotropic[i] = true;
+        isIsotropic[i] = false;  // orientation updated by VMMC rotation moves
     }
 
     double maxTrialTranslation = 1.5;
@@ -711,7 +750,7 @@ int main(int argc, char** argv)
                      probTranslate, referenceRadius,
                      maxInteractions, &boxSize[0], isIsotropic.get(), isRepulsive,
                      callbacks, isLattice, nLatticeNeighbours,
-                     phi_sl, N0);
+                     0.0 /*phi_sl: disabled in patchy model*/, N0);
 
     vmmc.hydrAlpha = useStokes ? 1.0 : 0.0;
     if (seed != 0) vmmc.rng.setSeed(seed);

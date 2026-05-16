@@ -1,7 +1,17 @@
-# NucleolusAssembly
+# NucleolusAssemblyPatchy
 
 VMMC lattice simulations for Chapter 2 of Samuel Whitby's PhD thesis:
 *"Towards a Model of Annealing in Spatial Gradients"*.
+
+This is a fork of
+[NucleolusAssembly](https://github.com/Sam-Whitby/NucleolusAssembly) that
+replaces the isotropic Gō-model interaction scheme with an
+**orientation-dependent, body-frame patchy particle model** (Kern–Frenkel
+1003).  The key motivation is to prevent spurious aggregation between completed
+target complexes: in the parent model, two finished complexes can lower their
+energy by forming inter-complex contacts.  Directional patches fix this because
+every active patch on a completed complex faces an intra-complex partner,
+leaving the outer surface smooth and non-sticky.
 
 The code models the self-assembly of ribosomal subunit complexes inside a
 condensate where a chemical gradient (pH, ionic strength) acts as a spatial
@@ -63,20 +73,46 @@ a backbone-bonded pair from d = 1 to d = √2 is energetically favourable,
 so VMMC readily recruits backbone partners into the same cluster, preserving
 the chain topology.
 
-### Weak coupling (Gō model)
+### Patchy particle interactions
 
-All weak coupling is stored in 16×16 matrices indexed by local particle id,
-implementing a Gō model with J = 8, ε = 0.5:
+This codebase uses a **Kern–Frenkel patchy particle model** on the square
+lattice.  Each particle has a 2D orientation vector `(ox, oy)` constrained to
+the four lattice directions `{(1,0),(0,1),(-1,0),(0,-1)}`.  VMMC rotation moves
+update this orientation; `isIsotropic = false` for all particles.
+
+#### Interaction rules (16×16 coupling matrices, indexed by local particle id)
 
 | Condition | d = 1 | d = √2 | d = 2 |
 |---|---|---|---|
-| Same polymer type | −J (repulsive) | −J | −εJ |
-| Cross-type, Gō neighbours at d = 1 in T | +J (attractive) | — | — |
-| Cross-type, Gō neighbours at d = √2 in T | — | +εJ | — |
-| Other cross-type pairs | 0 | 0 | 0 |
+| Same polymer type | 0 | 0 | 0 |
+| Cross-type, native d = 1 contact, patches aligned | −J | — | — |
+| Cross-type, native d = 1 contact, patches misaligned | 0 | — | — |
+| Cross-type, native d = √2 contact | 0 | 0 | 0 |
 
-All weak couplings between particles i and j are multiplied by a coupling
-factor g that encodes the local chemistry (see Chemical gradient below).
+**Changes from the parent model:**
+- Same-type repulsions removed — hard-core excluded volume (d < 1 → ∞) is
+  sufficient; no orientational asymmetry needed.
+- Cross-type d = √2 contacts removed — diagonal separations are not gateable by
+  the patch system and would create ungated inter-complex attraction.
+- All remaining d = 1 cross-type contacts are **patch-gated**: a bond forms
+  only when both particles present their active patch face toward the other.
+
+#### Patch slot convention (body frame)
+
+| Slot | Local direction | World direction when `ori = (1,0)` |
+|------|----------------|-------------------------------------|
+| 0 | local-east (same as `ori`) | world-east (+x) |
+| 1 | local-north (90° CCW from `ori`) | world-north (+y) |
+| 2 | local-west (opposite to `ori`) | world-west (−x) |
+| 3 | local-south (90° CW from `ori`) | world-south (−y) |
+
+Patches are defined in the particle's **body frame** and rotate with it.
+A completed 4×4 complex has every active patch occupied by its native partner;
+no inward-facing patches remain free to interact with other complexes.
+
+Weak couplings are multiplied by a coupling factor g from the chemical gradient
+(see Chemical gradient below).  Backbone bonds are unchanged and not
+patch-gated.
 Hard-core overlap (d < 1) is always forbidden.
 
 ### Chemical gradient
@@ -176,16 +212,13 @@ After the cluster is assembled, the move is accepted by:
 
 ### Saturated-Link (SL) moves
 
-A fraction φ_SL of move attempts are Saturated-Link moves.  During an SL
-move, a per-type occupancy array tracks which of the 16 particle types
-(type = global_id mod 16 = local position in the complex) are already
-in the cluster.  If a candidate neighbour's type is already occupied, the
-recruitment link is *skipped* rather than tested.
+Saturated-Link moves are **disabled** in this codebase (`phi_sl = 0`).
+The `--phi-sl` flag has been removed.
 
-This prevents kinetic trapping in states where the same-type repulsion has
-locked multiple particles of the same local type into a stuck configuration.
-Because skipped pairs never form frustrated links, their contribution to the
-energy change is correctly handled by the step-7 Metropolis factor above.
+SL moves were introduced to resolve kinetic trapping caused by same-type
+repulsions.  Since same-type repulsions have been removed in the patchy model,
+SL moves are no longer needed.  The `--phi-rot` flag (rotation move fraction)
+is retained and is important for patch reorientation.
 
 Reference: Holmes-Cerfon & Wyart, arXiv:2501.02611 (2025).
 
@@ -242,8 +275,7 @@ filling the denaturing zone in a snake-like pattern.
 | `--width W` | 10 | Column width (periodic y period). |
 | `--gradient` | off | Enable linear gradient γ(x) = x/L. |
 | `--stokes` | off | Stokes drag (recommended for dynamics comparisons). |
-| `--phi-sl φ` | 0.2 | Fraction of SL moves. |
-| `--phi-rot φ` | 0.2 | Fraction of rotation moves. |
+| `--phi-rot φ` | 0.2 | Fraction of rotation moves (required for patch reorientation). |
 | `--output PREFIX` | `nucleolus` | Output prefix → PREFIX_traj.txt, PREFIX_stats.txt. |
 | `--seed S` | 1 | RNG seed (0 = hardware random, non-reproducible). |
 
@@ -254,7 +286,7 @@ filling the denaturing zone in a snake-like pattern.
     --steps 200000  --snapshots 1000 \
     --length 60     --width 10       \
     --gradient      --stokes         \
-    --phi-sl 0.2    --phi-rot 0.2    \
+    --phi-rot 0.2                    \
     --seed 2        --output my_column
 ```
 
@@ -359,12 +391,13 @@ After every VMMC outer iteration:
 
 The pair energy of one fully assembled target complex with g = 1 is
 pre-computed analytically at startup from `TARGET_X`/`TARGET_Y` and the
-coupling parameters (J = 8, ε = 0.5, E_backbone = 1000):
+coupling parameters (J = 8, E_backbone = 1000):
 
-- 12 backbone bonds at d = 1:  −(E_backbone − J) = −992 each
-- 12 cross-polymer Gō contacts at d = 1:   −J = −8 each
-- 12 cross-polymer Gō contacts at d = √2:  −εJ = −4 each
-- Total: **E_ref = −12 048**
+- 12 backbone bonds at d = 1:  −E_backbone = −1000 each
+  (same-type weakD1 is now 0, so backbone energy is the full −1000)
+- 12 cross-polymer patch contacts at d = 1:  −J = −8 each
+- d = √2 cross-type contacts: removed from patchy model
+- Total: **E_ref = −12 096**
 
 Particles at r > R_c have γ(r) clamped to 1.0, so an exiting complex's pair
 energy equals E_ref regardless of the coupling mode, γ₀, or simulation phase.
@@ -466,11 +499,12 @@ staged polymers in the staging area), excluding all nonpairwise terms.
 Nonpairwise terms (ring-site repulsion) never appear in reported energies;
 see [Ring-site repulsion](#ring-site-repulsion) above.
 
-Expected energy values per phase:
-- **Equil (g = 1):** ≈ −992 per backbone bond (3 per polymer × 16 polymers)
-  plus all active weak couplings ≈ −47 800 to −48 000 for 4 copies.
+Expected energy values per phase (patchy model, 4 copies):
+- **Equil (g = 1):** exactly −12 096 per fully assembled complex × 4 copies
+  = −48 384.  Backbone bonds contribute −1000 each (same-type weakD1 = 0),
+  patch contacts contribute −8 each.
 - **Denat (g = 0):** exactly −1000 per backbone bond = −48 000 for 4 copies
-  (48 backbone bonds total, no weak coupling).
+  (48 backbone bonds total, no patch contacts active).
 - **Main (gradient):** between the equil and denat values, evolving as
   complexes assemble and recycle.
 
@@ -492,8 +526,7 @@ Expected energy values per phase:
 | `--gradient` | off | Enable radial gradient (otherwise g = 1 in main phase). |
 | `--stokes` | off | Stokes drag: D ∝ 1/R (recommended). |
 | `--coupling MODE` | `product` | Coupling mode: `product` or `midpoint`. |
-| `--phi-sl φ` | 0.2 | Fraction of SL moves. |
-| `--phi-rot φ` | 0.2 | Fraction of rotation moves. |
+| `--phi-rot φ` | 0.2 | Fraction of rotation moves (required for patch reorientation). |
 | `--output PREFIX` | `condensate` | Output prefix. |
 | `--seed S` | 1 | RNG seed (0 = hardware random, non-reproducible). |
 
@@ -512,7 +545,7 @@ Expected energy values per phase:
     --steps 200000  --snapshots 1000 \
     --radius 60     --gamma0 0.0     --gradient        \
     --stokes        --coupling product \
-    --phi-sl 0.2    --phi-rot 0.2    \
+    --phi-rot 0.2                    \
     --seed 1        --output my_circle
 ```
 
@@ -555,9 +588,13 @@ Both simulations produce two files per run:
 ```
 <N_particles>
 step=S energy=E [geometry and exit counters]
-<id> <poly_type> <x> <y> <copy>
+<id> <poly_type> <x> <y> <copy> <ox> <oy>
 ...   (N_particles rows per frame)
 ```
+
+`ox`, `oy` — orientation unit vector in world frame.  All particles start at
+`(1,0)` and are updated by VMMC rotation moves.  The existing visualisers
+tolerate the extra columns (they parse only the first five).
 
 Column model header:
 ```
