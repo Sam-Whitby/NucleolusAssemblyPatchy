@@ -7,8 +7,8 @@ OBJ_FILES := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRC_FILES))
 FLAGS  = -std=c++11 -O3 -MMD
 CXX   := g++
 
-# Default builds both thesis simulation binaries
-all: run_nucleolus run_condensate
+# Default builds all three simulation binaries
+all: run_nucleolus run_condensate run_box
 
 # Compile all src/*.cpp → obj/*.o
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
@@ -25,6 +25,12 @@ run_condensate: run_condensate.o $(OBJ_FILES)
 
 run_condensate.o: run_condensate.cpp
 	$(CXX) -c $(FLAGS) run_condensate.cpp -I$(HEADERS)
+
+run_box: run_box.o $(OBJ_FILES)
+	$(CXX) $(FLAGS) -o run_box $^ -I$(HEADERS)
+
+run_box.o: run_box.cpp
+	$(CXX) -c $(FLAGS) run_box.cpp -I$(HEADERS)
 
 run_hier: run_hier.o $(OBJ_FILES)
 	$(CXX) $(FLAGS) -o run_hier $^ -I$(HEADERS)
@@ -46,7 +52,7 @@ run_polymer.o: run_polymer.cpp
 
 clean:
 	rm -f *.o $(OBJ_DIR)/*.o *.d $(OBJ_DIR)/*.d \
-	      run_nucleolus run_condensate run_hier run_custom run_polymer
+	      run_nucleolus run_condensate run_box run_hier run_custom run_polymer
 
 -include $(OBJ_FILES:.o=.d)
 

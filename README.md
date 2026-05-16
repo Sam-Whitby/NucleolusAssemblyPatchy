@@ -2,12 +2,13 @@
 
 VMMC lattice simulations for Samuel Whitby's PhD thesis (*"Towards a Model of Annealing in Spatial Gradients"*). Fork of [NucleolusAssembly](https://github.com/Sam-Whitby/NucleolusAssembly), replacing the isotropic Gō-model with an **orientation-dependent Kern–Frenkel patchy particle model** to prevent spurious inter-complex aggregation: every active patch on a finished complex faces an intra-complex partner, leaving the outer surface smooth.
 
-Two condensate geometries:
+Three simulation types:
 
 | Binary | Geometry |
 |---|---|
 | `run_nucleolus` | Column (linear gradient along x, periodic y) |
 | `run_condensate` | Circular (radial gradient, ring injection, open at r > R_c) |
+| `run_box` | Periodic square box (no recycling; optional `--anneal` ramp) |
 
 ---
 
@@ -195,6 +196,59 @@ step=S energy=E [phase/geometry fields]
 
 ```
 # step  energy  exitedParticles  exitedPerfect  acceptRatio  [phase]
+```
+
+---
+
+## Periodic box (`run_box`)
+
+All particles remain in the system at all times. Starts with `--copies` fully assembled target complexes. No spatial gradient — coupling is spatially uniform and set by the current gamma value.
+
+Two phases (both optional):
+
+| Phase | Flag | Gamma | Purpose |
+|---|---|---|---|
+| Denaturation | `--t-denat N` | 0 | Break assembled complexes apart |
+| Main | `--steps N` | 1 (or ramped if `--anneal`) | Assembly / equilibration |
+
+With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at outer iteration i (0-indexed), gamma = i/(N-1). Without `--anneal`, gamma=1 throughout the main phase.
+
+### Usage
+
+```
+./run_box [OPTIONS]
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--steps N` | 10000 | Main-phase outer iterations |
+| `--snapshots N` | 1000 | Trajectory frames across all phases |
+| `--t-denat N` | 0 | Denaturation iterations at gamma=0 |
+| `--copies N` | 4 | Number of complex copies |
+| `--box-size L` | 20 | Square box side length (lattice units) |
+| `--anneal` | off | Ramp gamma 0→1 over main-phase steps |
+| `--stokes` | off | Stokes drag (D ∝ 1/R) |
+| `--phi-rot φ` | 0.2 | Cluster rotation fraction |
+| `--phi-reorient φ` | 0.2 | In-place reorientation fraction |
+| `--output PREFIX` | `box` | Output file prefix |
+| `--seed S` | 1 | RNG seed (0 = hardware random) |
+
+### Example
+
+```bash
+# Anneal from denatured state
+./run_box \
+    --copies 4     --box-size 40      \
+    --t-denat 5000 --steps 50000      \
+    --anneal       --stokes           \
+    --phi-rot 0.2  --phi-reorient 0.2 \
+    --seed 1       --output my_box
+
+# Fixed coupling (equilibrium at g=1)
+./run_box \
+    --copies 4     --box-size 30  \
+    --steps 100000 --stokes       \
+    --seed 1       --output equil_box
 ```
 
 ---
