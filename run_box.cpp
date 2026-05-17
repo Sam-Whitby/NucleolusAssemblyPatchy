@@ -450,6 +450,9 @@ int main(int argc, char* argv[])
         writeStep0(firstPhase, gamma0_init);
     }
 
+    // Cumulative step counter so trajectory steps increase monotonically across phases.
+    long long stepOffset = 0;
+
     // ============================================================
     //  Phase 1: Equilibration (t_equil steps at gamma=1)
     // ============================================================
@@ -466,13 +469,14 @@ int main(int argc, char* argv[])
                                      ? (double)vmmc.getAccepts() / vmmc.getAttempts()
                                      : 0.0;
                 int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 1.0,
+                writeFrame(fp_traj, particles, nCopies, L_box, stepOffset + step, energy, 1.0,
                            refComplexEnergy, assembled, "equil");
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  equil\n",
-                        step, energy, acceptRatio, 1.0, assembled);
+                        stepOffset + step, energy, acceptRatio, 1.0, assembled);
                 fflush(fp_stat);
             }
         }
+        stepOffset += t_equil;
     }
 
     // ============================================================
@@ -491,13 +495,14 @@ int main(int argc, char* argv[])
                                      ? (double)vmmc.getAccepts() / vmmc.getAttempts()
                                      : 0.0;
                 int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 0.0,
+                writeFrame(fp_traj, particles, nCopies, L_box, stepOffset + step, energy, 0.0,
                            refComplexEnergy, assembled, "denat");
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  denat\n",
-                        step, energy, acceptRatio, 0.0, assembled);
+                        stepOffset + step, energy, acceptRatio, 0.0, assembled);
                 fflush(fp_stat);
             }
         }
+        stepOffset += t_denat;
     }
 
     // ============================================================
@@ -525,13 +530,14 @@ int main(int argc, char* argv[])
                                      : 0.0;
                 double g = model.uniformGamma;
                 int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, g,
+                writeFrame(fp_traj, particles, nCopies, L_box, stepOffset + step, energy, g,
                            refComplexEnergy, assembled, "main");
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  main\n",
-                        step, energy, acceptRatio, g, assembled);
+                        stepOffset + step, energy, acceptRatio, g, assembled);
                 fflush(fp_stat);
             }
         }
+        stepOffset += nsteps;
     }
 
     // ============================================================
@@ -550,10 +556,10 @@ int main(int argc, char* argv[])
                                      ? (double)vmmc.getAccepts() / vmmc.getAttempts()
                                      : 0.0;
                 int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 1.0,
+                writeFrame(fp_traj, particles, nCopies, L_box, stepOffset + step, energy, 1.0,
                            refComplexEnergy, assembled, "after");
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  after\n",
-                        step, energy, acceptRatio, 1.0, assembled);
+                        stepOffset + step, energy, acceptRatio, 1.0, assembled);
                 fflush(fp_stat);
             }
         }
