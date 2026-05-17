@@ -584,6 +584,7 @@ int main(int argc, char** argv)
     double    phi_reorient = 0.2;
     string    outPrefix   = "condensate";
     unsigned int seed     = 1;
+    double    J           = 8.0;
 
     for (int i = 1; i < argc; i++) {
         if      (!strcmp(argv[i],"--steps")    && i+1<argc) { nsteps    = atoll(argv[++i]); }
@@ -600,6 +601,7 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i],"--phi-reorient")&&i+1<argc) { phi_reorient= atof(argv[++i]); }
         else if (!strcmp(argv[i],"--output")      && i+1<argc) { outPrefix  = argv[++i]; }
         else if (!strcmp(argv[i],"--seed")     && i+1<argc) { seed = (unsigned int)atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--J")        && i+1<argc) { J         = atof(argv[++i]); }
         else {
             cerr << "Unknown argument: " << argv[i] << "\n";
         }
@@ -635,11 +637,10 @@ int main(int argc, char** argv)
          << "  t_equil=" << t_equil << " t_denat=" << t_denat << " steps=" << nsteps
          << "  R_c=" << R_c << "  gamma0=" << gamma0
          << "  gradient=" << useGradient << " stokes=" << useStokes
-         << "  coupling=" << couplingStr
+         << "  coupling=" << couplingStr << "  J=" << J
          << "  phi_rot=" << phi_rot << "  phi_reorient=" << phi_reorient << endl;
 
     const int    nParticles = nCopies * N0;
-    const double J          = 8.0;
     const double bbEnergy   = 1000.0;
 
     const double R_large = max(6.0 * R_c, 150.0);

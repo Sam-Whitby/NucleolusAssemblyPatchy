@@ -585,6 +585,7 @@ int main(int argc, char** argv)
     double phi_reorient = 0.2;
     string outPrefix    = "nucleolus";
     unsigned int seed   = 1;  // default non-zero → always deterministic
+    double J            = 8.0;
 
     // --- Parse arguments ---
     for (int i = 1; i < argc; i++) {
@@ -598,6 +599,7 @@ int main(int argc, char** argv)
         else if (!strcmp(argv[i],"--phi-reorient") && i+1<argc) { phi_reorient= atof(argv[++i]); }
         else if (!strcmp(argv[i],"--output")       && i+1<argc) { outPrefix   = argv[++i]; }
         else if (!strcmp(argv[i],"--seed")      && i+1<argc) { seed      = (unsigned int)atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--J")         && i+1<argc) { J         = atof(argv[++i]); }
         else {
             cerr << "Unknown argument: " << argv[i] << "\n"
                  << "Run ./run_nucleolus --help for usage.\n";
@@ -614,12 +616,12 @@ int main(int argc, char** argv)
          << " (every " << saveEvery << " steps)"
          << "  L=" << L_col << " W=" << W
          << "  gradient=" << useGradient << " stokes=" << useStokes
+         << "  J=" << J
          << "  phi_rot=" << phi_rot << "  phi_reorient=" << phi_reorient << endl;
 
     // --- Parameters ---
     const int    nCopies    = 4;
     const int    nParticles = nCopies * N0;
-    const double J          = 8.0;
     const double bbEnergy   = 1000.0;   // backbone bond strength (effective ∞)
     const double X_MAX      = (double)(max(5 * L_col, 300)); // effective box x size
 
