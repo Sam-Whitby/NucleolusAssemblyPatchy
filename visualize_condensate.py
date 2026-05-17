@@ -86,6 +86,10 @@ def parse_traj(path):
         coupling        = _kv(hdr, 'coupling', 'product')
         gamma0          = float(_kv(hdr, 'gamma0', 0.0))
         phase           = _kv(hdr, 'phase', 'main')
+        ref_e_s         = _kv(hdr, 'refEnergy',  None)
+        n_asm_s         = _kv(hdr, 'nAssembled', None)
+        refEnergy       = float(ref_e_s) if ref_e_s is not None else None
+        nAssembled      = int(n_asm_s)   if n_asm_s is not None else None
 
         particles = []
         for _ in range(n):
@@ -110,6 +114,7 @@ def parse_traj(path):
                 R_c=R_c, cx=cx, cy=cy, nCopies=nCopies,
                 coupling=coupling, gamma0=gamma0,
                 phase=phase, particles=particles,
+                refEnergy=refEnergy, nAssembled=nAssembled,
             ))
 
     return frames
@@ -145,9 +150,24 @@ def main():
     ts_perfect = [f['exited_perfect']   for f in all_frames]
     ts_phases  = [f['phase']            for f in all_frames]
 
-    # Subtract baseline so E(0) = 0 in the plot.
-    E0 = ts_energy[0]
-    ts_energy_rel = [e - E0 for e in ts_energy]
+    # Normalise energy so that E_min (all complexes perfect) = 0.
+    # Falls back to E − E(0) if refEnergy is not in the file.
+    nCopies_f  = frames[0]['nCopies']
+    ref_energy = frames[0].get('refEnergy')
+    if ref_energy is not None:
+        E_min = nCopies_f * ref_energy
+        energy_ylabel = "ΔE (above perfect assembly)"
+        energy_title  = "Excess energy"
+    else:
+        E_min = ts_energy[0]
+        energy_ylabel = "ΔE  (E − E₀)"
+        energy_title  = "System energy (baseline-subtracted)"
+    ts_energy_rel = [e - E_min for e in ts_energy]
+
+    # Assembly fraction time series.
+    has_asm     = frames[0].get('nAssembled') is not None
+    ts_asm_frac = ([f.get('nAssembled', 0) / nCopies_f for f in all_frames]
+                   if has_asm else None)
 
     # ---------------------------------------------------------------------- #
     # Figure layout
@@ -228,14 +248,14 @@ def main():
     # Equal aspect LAST so imshow/patches don't override it.
     ax_anim.set_aspect('equal', adjustable='box')
 
-    # --- Energy panel (E − E₀) ---
+    # --- Energy panel ---
     ax_ener.plot(ts_steps, ts_energy_rel, color='#555555', lw=0.8, alpha=0.4)
     ener_marker, = ax_ener.plot([], [], 'o', color='#e6194b', ms=5, zorder=5)
     ener_vline   = ax_ener.axvline(0, color='#e6194b', lw=0.8, ls='--', alpha=0.7)
     ax_ener.axhline(0, color='#aaaaaa', lw=0.6, ls=':')
     ax_ener.set_xlabel("Step", fontsize=8)
-    ax_ener.set_ylabel("ΔE  (E − E₀)", fontsize=8)
-    ax_ener.set_title("System energy (baseline-subtracted)", fontsize=8)
+    ax_ener.set_ylabel(energy_ylabel, fontsize=8)
+    ax_ener.set_title(energy_title, fontsize=8)
     ax_ener.tick_params(labelsize=7)
     if ts_steps:
         ax_ener.set_xlim(min(ts_steps), max(ts_steps))
@@ -244,17 +264,29 @@ def main():
     ax_exits.plot(ts_steps, ts_parts,   color='#555555', lw=0.8, alpha=0.4,
                   label='All particles')
     ax_exits.plot(ts_steps, ts_perfect, color='#3cb44b', lw=0.8, alpha=0.6,
-                  label='Perfect complexes (×16)')
+                  label='Perfect complexes (×N0)')
     parts_marker,   = ax_exits.plot([], [], 'o', color='#555555', ms=5, zorder=5)
     perfect_marker, = ax_exits.plot([], [], 'o', color='#3cb44b', ms=5, zorder=5)
     exits_vline     = ax_exits.axvline(0, color='#888888', lw=0.8, ls='--', alpha=0.7)
     ax_exits.set_xlabel("Step", fontsize=8)
     ax_exits.set_ylabel("Cumulative count", fontsize=8)
-    ax_exits.set_title("Particles exited", fontsize=8)
+    ax_exits.set_title("Particles exited / assembly", fontsize=8)
     ax_exits.tick_params(labelsize=7)
     ax_exits.legend(fontsize=6, loc='upper left')
     if ts_steps:
         ax_exits.set_xlim(min(ts_steps), max(ts_steps))
+
+    # Assembly fraction on the right axis of the exits panel.
+    asm_marker = None
+    if ts_asm_frac is not None:
+        ax2_asm = ax_exits.twinx()
+        ax2_asm.plot(ts_steps, ts_asm_frac, color='purple', lw=1.0, alpha=0.7,
+                     ls='--', label='assembled/N')
+        asm_marker, = ax2_asm.plot([], [], 'o', color='purple', ms=4, zorder=5)
+        ax2_asm.set_ylabel("Assembled / N", fontsize=7, color='purple')
+        ax2_asm.set_ylim(-0.05, 1.05)
+        ax2_asm.tick_params(labelsize=6, colors='purple')
+        ax2_asm.spines['right'].set_color('purple')
 
     # ---------------------------------------------------------------------- #
     # Update function
@@ -290,22 +322,29 @@ def main():
                     bond_lines.append(ln)
 
         phase = fr.get('phase', 'main')
+        n_cop = fr.get('nCopies', nCopies_f)
+        n_asm = fr.get('nAssembled')
+        asm_str = f"  asm={n_asm}/{n_cop}" if n_asm is not None else ""
+        energy_rel = fr['energy'] - E_min
         frame_text.set_text(
-            f"step {fr['step']}  E−E₀={fr['energy']-E0:.1f}"
+            f"step {fr['step']}  ΔE={energy_rel:.1f}{asm_str}"
             f"  exitParts={fr['exited_particles']}  perfect={fr['exited_perfect']}"
             f"  [{phase}]"
         )
 
         s = fr['step']
-        energy_rel = fr['energy'] - E0
         ener_marker.set_data([s], [energy_rel])
         ener_vline.set_xdata([s, s])
         parts_marker.set_data([s], [fr['exited_particles']])
         perfect_marker.set_data([s], [fr['exited_perfect']])
         exits_vline.set_xdata([s, s])
 
-        return ([scat, frame_text, ener_marker, ener_vline,
-                 parts_marker, perfect_marker, exits_vline] + bond_lines)
+        ret = ([scat, frame_text, ener_marker, ener_vline,
+                parts_marker, perfect_marker, exits_vline] + bond_lines)
+        if asm_marker is not None and n_asm is not None:
+            asm_marker.set_data([s], [n_asm / n_cop])
+            ret.append(asm_marker)
+        return ret
 
     ani = animation.FuncAnimation(
         fig, update,

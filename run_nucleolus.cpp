@@ -369,6 +369,31 @@ static double componentPairEnergy(NucleolusModel& model,
 }
 
 // ============================================================
+//  Count copies whose intra-copy pairwise energy equals refComplexEnergy
+//  within tolerance 0.5.  For the gradient model this identifies complexes
+//  that are both structurally assembled and at full coupling (near x = L).
+// ============================================================
+static int countAssembled(NucleolusModel& model, const vector<Particle>& particles,
+                           int nCopies, double refComplexEnergy)
+{
+    int n = 0;
+    for (int c = 0; c < nCopies; c++) {
+        int base = c * N0;
+        double E = 0.0;
+        for (int i = base; i < base + N0; i++) {
+            for (int j = i+1; j < base + N0; j++) {
+                double e = model.computePairEnergy(
+                    i, &particles[i].position[0], &particles[i].orientation[0],
+                    j, &particles[j].position[0], &particles[j].orientation[0]);
+                if (e < 1e5) E += e;
+            }
+        }
+        if (fabs(E - refComplexEnergy) < 0.5) n++;
+    }
+    return n;
+}
+
+// ============================================================
 //  Interaction-graph connected components using computePairEnergy.
 //  Builds adjacency for ALL particles (not just within x>L).
 //  Returns fragmentID[i] = component id for particle i,
@@ -487,12 +512,13 @@ static int checkAndReplace(NucleolusModel& model,
 // ============================================================
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         int nCopies, double L_col, double W,
-                        long long step, double energy, long long totalExited)
+                        long long step, double energy, long long totalExited,
+                        double refEnergy, int nAssembled)
 {
     int nParticles = (int)particles.size();
     fprintf(fp, "%d\n", nParticles);
-    fprintf(fp, "step=%lld energy=%.6f exited=%lld L=%.1f W=%.1f nCopies=%d\n",
-            step, energy, totalExited, L_col, W, nCopies);
+    fprintf(fp, "step=%lld energy=%.6f exited=%lld L=%.1f W=%.1f nCopies=%d refEnergy=%.4f nAssembled=%d\n",
+            step, energy, totalExited, L_col, W, nCopies, refEnergy, nAssembled);
     for (int i = 0; i < nParticles; i++) {
         int copy  = i / N0;
         int lid   = i % N0;
@@ -719,12 +745,14 @@ int main(int argc, char** argv)
         cerr << "Cannot open output files.\n";
         return 1;
     }
-    fprintf(fp_stat, "# step  energy  nExited  acceptRatio\n");
+    fprintf(fp_stat, "# step  energy  nExited  acceptRatio  nAssembled\n");
 
     // Write initial frame (step 0)
-    double initEnergy = model.getEnergy() * nParticles;
-    writeFrame(fp_traj, particles, nCopies, L_col, W, 0, initEnergy, 0);
-    fprintf(fp_stat, "0  %.4f  0  0.0000\n", initEnergy);
+    double initEnergy   = model.getEnergy() * nParticles;
+    int    initAssembled = countAssembled(model, particles, nCopies, refComplexEnergy);
+    writeFrame(fp_traj, particles, nCopies, L_col, W, 0, initEnergy, 0,
+               refComplexEnergy, initAssembled);
+    fprintf(fp_stat, "0  %.4f  0  0.0000  %d\n", initEnergy, initAssembled);
 
     // --- Simulation loop ---
     cout << "Starting simulation..." << endl;
@@ -788,10 +816,11 @@ int main(int argc, char** argv)
         // Save snapshot if this step falls on a save interval or is the last step
         bool doSave = (step % saveEvery == 0) || (step == nsteps);
         if (doSave) {
+            int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
             writeFrame(fp_traj, particles, nCopies, L_col, W,
-                       step, energy, totalExited);
-            fprintf(fp_stat, "%lld  %.4f  %lld  %.4f\n",
-                    step, energy, totalExited, acceptRatio);
+                       step, energy, totalExited, refComplexEnergy, assembled);
+            fprintf(fp_stat, "%lld  %.4f  %lld  %.4f  %d\n",
+                    step, energy, totalExited, acceptRatio, assembled);
         }
 
         if (step % max(1LL, nsteps/20) == 0) {

@@ -99,6 +99,10 @@ def parse_traj(path):
         L       = float(_kv(hdr, 'L',     60))
         W       = float(_kv(hdr, 'W',     10))
         nCopies = int(_kv(hdr, 'nCopies', 4))
+        ref_e_s = _kv(hdr, 'refEnergy',  None)
+        n_asm_s = _kv(hdr, 'nAssembled', None)
+        refEnergy  = float(ref_e_s) if ref_e_s is not None else None
+        nAssembled = int(n_asm_s)   if n_asm_s is not None else None
 
         particles = []
         for _ in range(n):
@@ -117,6 +121,7 @@ def parse_traj(path):
             frames.append(dict(
                 step=step, energy=energy, exited=exited,
                 L=L, W=W, nCopies=nCopies, particles=particles,
+                refEnergy=refEnergy, nAssembled=nAssembled,
             ))
 
     return frames
@@ -261,8 +266,13 @@ def _update_particles(artists, ax_anim, fr):
                                    color=_BACKBONE_COLOR, lw=_BOND_LW, zorder=2)
                 artists['bond_lines'].append(ln)
 
+    ref = fr.get('refEnergy')
+    n_cop = fr.get('nCopies', 4)
+    e_plot = fr['energy'] - n_cop * ref if ref is not None else fr['energy']
+    n_asm  = fr.get('nAssembled')
+    asm_str = f"  asm={n_asm}/{n_cop}" if n_asm is not None else ""
     artists['frame_text'].set_text(
-        f"step {fr['step']}  E={fr['energy']:.1f}  exited={fr['exited']}"
+        f"step {fr['step']}  ΔE={e_plot:.1f}{asm_str}  exited={fr['exited']}"
     )
 
 
@@ -303,12 +313,18 @@ def live_mode(path, args, grad_L, col_W):
 
         fr = all_frames[-1]
         ts_steps  = [f['step']   for f in all_frames]
-        ts_energy = [f['energy'] for f in all_frames]
         ts_exited = [f['exited'] for f in all_frames]
 
-        artists['ener_bg'].set_data(ts_steps, ts_energy)
+        ref = all_frames[0].get('refEnergy')
+        n_cop = all_frames[0].get('nCopies', 4)
+        E_min_live = n_cop * ref if ref is not None else None
+        ts_energy_plot = ([f['energy'] - E_min_live for f in all_frames]
+                          if E_min_live is not None else [f['energy'] for f in all_frames])
+        e_fr = fr['energy'] - E_min_live if E_min_live is not None else fr['energy']
+
+        artists['ener_bg'].set_data(ts_steps, ts_energy_plot)
         artists['exits_bg'].set_data(ts_steps, ts_exited)
-        artists['ener_marker'].set_data([fr['step']], [fr['energy']])
+        artists['ener_marker'].set_data([fr['step']], [e_fr])
         artists['exits_marker'].set_data([fr['step']], [fr['exited']])
         for ax in (ax_ener, ax_exits):
             ax.relim()
@@ -379,8 +395,19 @@ def main():
     print(f"  {len(all_frames)} frames total, rendering {len(frames)}.", flush=True)
 
     ts_steps  = [f['step']   for f in all_frames]
-    ts_energy = [f['energy'] for f in all_frames]
     ts_exited = [f['exited'] for f in all_frames]
+
+    # Energy normalisation.
+    ref_energy = frames[0].get('refEnergy')
+    nCopies_f  = frames[0].get('nCopies', 4)
+    E_min      = nCopies_f * ref_energy if ref_energy is not None else None
+    ts_energy_plot = ([f['energy'] - E_min for f in all_frames]
+                      if E_min is not None else [f['energy'] for f in all_frames])
+
+    # Assembly fraction time series.
+    has_asm    = frames[0].get('nAssembled') is not None
+    ts_asm_frac = ([f.get('nAssembled', 0) / nCopies_f for f in all_frames]
+                   if has_asm else None)
 
     grad_L = args.gradient_length or frames[0]['L']
     col_W  = args.width           or frames[0]['W']
@@ -391,15 +418,34 @@ def main():
     fig, ax_anim, ax_ener, ax_exits = _build_figure(grad_L, col_W, args.title, x_max=x_max)
     artists = _init_artists(ax_anim, ax_ener, ax_exits)
 
-    # Draw static background time-series and fix axis ranges
-    artists['ener_bg'].set_data(ts_steps, ts_energy)
+    # Update energy panel labels.
+    if E_min is not None:
+        ax_ener.set_ylabel("ΔE (above perfect assembly)", fontsize=8)
+        ax_ener.set_title("Excess energy", fontsize=8)
+        ax_ener.axhline(0, color='#aaaaaa', lw=0.6, ls=':')
+
+    # Draw static background time-series and fix axis ranges.
+    artists['ener_bg'].set_data(ts_steps, ts_energy_plot)
     artists['exits_bg'].set_data(ts_steps, ts_exited)
     for ax in (ax_ener, ax_exits):
         ax.relim()
         ax.autoscale_view()
         ax.set_xlim(min(ts_steps), max(ts_steps))
 
-    # Vertical cursor lines that track the current frame
+    # Assembled fraction on the right axis of the exits panel.
+    asm_marker = None
+    if ts_asm_frac is not None:
+        ax2_asm = ax_exits.twinx()
+        ax2_asm.plot(ts_steps, ts_asm_frac, color='purple', lw=1.0, alpha=0.7,
+                     ls='--', label='assembled/N')
+        asm_marker, = ax2_asm.plot([], [], 'o', color='purple', ms=4, zorder=5)
+        ax2_asm.set_ylabel("Assembled / N", fontsize=7, color='purple')
+        ax2_asm.set_ylim(-0.05, 1.05)
+        ax2_asm.tick_params(labelsize=6, colors='purple')
+        ax2_asm.spines['right'].set_color('purple')
+        ax_exits.set_title("Exited complexes / assembly", fontsize=8)
+
+    # Vertical cursor lines that track the current frame.
     ener_vline  = ax_ener.axvline(0,  color="#e6194b", lw=0.8, ls="--", alpha=0.7)
     exits_vline = ax_exits.axvline(0, color="#3cb44b", lw=0.8, ls="--", alpha=0.7)
 
@@ -407,13 +453,22 @@ def main():
         fr = frames[frame_idx]
         _update_particles(artists, ax_anim, fr)
         s = fr['step']
-        artists['ener_marker'].set_data([s],  [fr['energy']])
+        ref = fr.get('refEnergy')
+        n_cop = fr.get('nCopies', 4)
+        e_plot = fr['energy'] - n_cop * ref if ref is not None else fr['energy']
+        artists['ener_marker'].set_data([s],  [e_plot])
         artists['exits_marker'].set_data([s], [fr['exited']])
         ener_vline.set_xdata([s, s])
         exits_vline.set_xdata([s, s])
-        return ([artists['scat'], artists['frame_text'],
-                 artists['ener_marker'], artists['exits_marker'],
-                 ener_vline, exits_vline] + artists['bond_lines'])
+        ret = ([artists['scat'], artists['frame_text'],
+                artists['ener_marker'], artists['exits_marker'],
+                ener_vline, exits_vline] + artists['bond_lines'])
+        if asm_marker is not None:
+            n_asm = fr.get('nAssembled')
+            if n_asm is not None:
+                asm_marker.set_data([s], [n_asm / n_cop])
+            ret.append(asm_marker)
+        return ret
 
     ani = animation.FuncAnimation(
         fig, update,

@@ -204,15 +204,16 @@ step=S energy=E [phase/geometry fields]
 
 All particles remain in the system at all times. Starts with `--copies` fully assembled target complexes. No spatial gradient — coupling is spatially uniform and set by the current gamma value.
 
-Three phases (all optional):
+Four phases (all optional):
 
 | Phase | Flag | Gamma | Purpose |
 |---|---|---|---|
 | Equilibration | `--t-equil N` | 1 | Verify assembled complexes are stable at full coupling |
 | Denaturation | `--t-denat N` | 0 | Break assembled complexes apart |
 | Main | `--steps N` | 1 (or ramped if `--anneal`) | Assembly / equilibration |
+| After | `--t-after N` | 1 | Post-anneal equilibration at full coupling |
 
-With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at outer iteration i (0-indexed), gamma = i/(N-1). Without `--anneal`, gamma=1 throughout the main phase.
+With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at outer iteration i (0-indexed), gamma = i/(N-1). Without `--anneal`, gamma=1 throughout the main phase. `--t-after` appends a γ=1 phase after main regardless of whether `--anneal` is used.
 
 ### Usage
 
@@ -226,6 +227,7 @@ With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at 
 | `--snapshots N` | 1000 | Trajectory frames across all phases |
 | `--t-equil N` | 0 | Equilibration iterations at gamma=1 |
 | `--t-denat N` | 0 | Denaturation iterations at gamma=0 |
+| `--t-after N` | 0 | Post-main iterations at gamma=1 |
 | `--copies N` | 4 | Number of complex copies |
 | `--box-size L` | 20 | Square box side length (lattice units) |
 | `--anneal` | off | Ramp gamma 0→1 over main-phase steps |
@@ -238,12 +240,12 @@ With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at 
 ### Example
 
 ```bash
-# Equil then anneal from denatured state
+# Equil → denature → anneal → post-anneal equilibration
 ./run_box \
-    --copies 4     --box-size 40      \
-    --t-equil 5000 --t-denat 5000     \
-    --steps 50000  --anneal --stokes  \
-    --phi-rot 0.2  --phi-reorient 0.2 \
+    --copies 4     --box-size 40         \
+    --t-equil 5000 --t-denat 5000        \
+    --steps 50000  --anneal --t-after 10000 \
+    --stokes       --phi-rot 0.2  --phi-reorient 0.2 \
     --seed 1       --output my_box
 
 # Fixed coupling (equilibrium at g=1)
@@ -261,11 +263,13 @@ python3 visualize_box.py my_box_traj.txt --output my_box.mp4 --fps 10
 ```
 
 The left panel shows particles in the periodic square box.  The box background
-colour is a uniform blue tint whose intensity tracks the current coupling
-strength γ: dark blue (γ≈0, denaturing) → light blue (γ=1, fully coupled).
-The top-right panel shows energy vs step; the bottom-right shows γ vs step
-(useful for `--anneal` runs) with the VMMC acceptance ratio overlaid if a
-stats file is present (auto-detected as `PREFIX_stats.txt`).
+colour is a uniform blue tint whose intensity tracks γ.  The top-right panel
+shows **excess energy** ΔE = E − E_min, where E_min = copies × E_ref is the
+energy when all complexes are perfectly assembled (ΔE = 0 at perfect assembly).
+The bottom-right panel shows γ (steelblue) and the assembled fraction
+(dashed purple, same 0–1 axis) vs step, with VMMC acceptance ratio overlaid if
+a stats file is present.  The frame text shows the current assembled count as
+`asm=K/N` where K is the number of fully assembled copies out of N total.
 
 ---
 

@@ -157,6 +157,30 @@ static double componentPairEnergy(CondensateModel& model,
 }
 
 // ============================================================
+//  Count copies whose intra-copy pairwise energy equals refComplexEnergy
+//  within tolerance 0.5.
+// ============================================================
+static int countAssembled(CondensateModel& model, const vector<Particle>& particles,
+                           int nCopies, double refComplexEnergy)
+{
+    int n = 0;
+    for (int c = 0; c < nCopies; c++) {
+        int base = c * N0;
+        double E = 0.0;
+        for (int i = base; i < base + N0; i++) {
+            for (int j = i+1; j < base + N0; j++) {
+                double e = model.computePairEnergy(
+                    i, &particles[i].position[0], &particles[i].orientation[0],
+                    j, &particles[j].position[0], &particles[j].orientation[0]);
+                if (e < 1e5) E += e;
+            }
+        }
+        if (fabs(E - refComplexEnergy) < 0.5) n++;
+    }
+    return n;
+}
+
+// ============================================================
 //  Build coupling matrices (patchy model).
 //
 //  Only cross-type d=1 pairs are attractive; all other entries are zero.
@@ -515,15 +539,17 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         long long step, double energy,
                         long long exitedParticles, long long exitedPerfect,
                         const string& couplingLabel, double gamma0,
-                        const string& phase)
+                        const string& phase, double refEnergy, int nAssembled)
 {
     int nParticles = (int)particles.size();
     fprintf(fp, "%d\n", nParticles);
     fprintf(fp,
         "step=%lld energy=%.6f exitedParticles=%lld exitedPerfect=%lld"
-        " R_c=%.1f cx=%.1f cy=%.1f nCopies=%d coupling=%s gamma0=%.4f phase=%s\n",
+        " R_c=%.1f cx=%.1f cy=%.1f nCopies=%d coupling=%s gamma0=%.4f phase=%s"
+        " refEnergy=%.4f nAssembled=%d\n",
         step, energy, exitedParticles, exitedPerfect,
-        R_c, cx, cy, nCopies, couplingLabel.c_str(), gamma0, phase.c_str());
+        R_c, cx, cy, nCopies, couplingLabel.c_str(), gamma0, phase.c_str(),
+        refEnergy, nAssembled);
     for (int i = 0; i < nParticles; i++) {
         int copy  = i / N0;
         int lid   = i % N0;
@@ -767,14 +793,17 @@ int main(int argc, char** argv)
         cerr << "Cannot open output files.\n";
         return 1;
     }
-    fprintf(fp_stat, "# step  energy  exitedParticles  exitedPerfect  acceptRatio  phase\n");
+    fprintf(fp_stat, "# step  energy  exitedParticles  exitedPerfect  acceptRatio  phase  nAssembled\n");
 
     // Write step-0 frame (assembled, phase=equil or main depending on what follows).
-    double initEnergy = model.getSystemEnergy();
-    string firstPhase = (t_equil > 0) ? "equil" : (t_denat > 0) ? "denat" : "main";
+    double initEnergy    = model.getSystemEnergy();
+    int    initAssembled = countAssembled(model, particles, nCopies, refComplexEnergy);
+    string firstPhase    = (t_equil > 0) ? "equil" : (t_denat > 0) ? "denat" : "main";
     writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
-               0, initEnergy, 0, 0, couplingStr, gamma0, firstPhase);
-    fprintf(fp_stat, "0  %.4f  0  0  0.0000  %s\n", initEnergy, firstPhase.c_str());
+               0, initEnergy, 0, 0, couplingStr, gamma0, firstPhase,
+               refComplexEnergy, initAssembled);
+    fprintf(fp_stat, "0  %.4f  0  0  0.0000  %s  %d\n",
+            initEnergy, firstPhase.c_str(), initAssembled);
 
     clock_t startTime = clock();
     long long globalStep          = 0;
@@ -801,14 +830,15 @@ int main(int argc, char** argv)
 
             bool doSave = (s % saveEveryN == 0) || (s == phaseSteps);
             if (doSave) {
+                int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
                 writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
                            globalStep, energy,
                            totalParticlesExited, totalPerfectExited,
-                           couplingStr, gamma0, phaseName);
-                fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s\n",
+                           couplingStr, gamma0, phaseName, refComplexEnergy, assembled);
+                fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s  %d\n",
                         globalStep, energy,
                         totalParticlesExited, totalPerfectExited,
-                        acceptRatio, phaseName.c_str());
+                        acceptRatio, phaseName.c_str(), assembled);
             }
 
             if (s % max(1LL, phaseSteps/10) == 0) {

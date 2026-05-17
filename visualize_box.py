@@ -97,6 +97,10 @@ def parse_traj(path):
         L       = float(_kv(hdr, 'L',      20.0))
         nCopies = int(_kv(hdr,   'nCopies', 4))
         phase   = _kv(hdr, 'phase', 'main')
+        ref_e_s = _kv(hdr, 'refEnergy',  None)
+        n_asm_s = _kv(hdr, 'nAssembled', None)
+        refEnergy  = float(ref_e_s) if ref_e_s is not None else None
+        nAssembled = int(n_asm_s)   if n_asm_s is not None else None
 
         particles = []
         for _ in range(n):
@@ -117,6 +121,7 @@ def parse_traj(path):
             frames.append(dict(
                 step=step, energy=energy, gamma=gamma,
                 L=L, nCopies=nCopies, phase=phase, particles=particles,
+                refEnergy=refEnergy, nAssembled=nAssembled,
             ))
 
     return frames
@@ -134,12 +139,21 @@ def parse_stats(path):
                 parts = line.split()
                 if len(parts) >= 4:
                     try:
+                        # Detect format: old = step energy acceptRatio gamma phase
+                        #                new = step energy acceptRatio gamma nAssembled phase
+                        try:
+                            nasm = int(parts[4]) if len(parts) > 4 else None
+                            phase_s = parts[5] if len(parts) > 5 else 'main'
+                        except (ValueError, IndexError):
+                            nasm = None
+                            phase_s = parts[4] if len(parts) > 4 else 'main'
                         records.append(dict(
                             step=int(parts[0]),
                             energy=float(parts[1]),
                             acceptRatio=float(parts[2]),
                             gamma=float(parts[3]),
-                            phase=parts[4] if len(parts) > 4 else 'main',
+                            nAssembled=nasm,
+                            phase=phase_s,
                         ))
                     except ValueError:
                         pass
@@ -190,11 +204,23 @@ def main():
     if stats_path and stats:
         print(f"  Stats loaded from {stats_path}.", flush=True)
 
-    L = frames[0]['L']
+    L       = frames[0]['L']
+    nCopies = frames[0]['nCopies']
+
+    # Energy normalisation: shift so that E_min (all complexes perfect) = 0.
+    ref_energy = frames[0].get('refEnergy')
+    E_min      = nCopies * ref_energy if ref_energy is not None else None
 
     ts_steps  = [f['step']   for f in all_frames]
     ts_energy = [f['energy'] for f in all_frames]
     ts_gamma  = [f['gamma']  for f in all_frames]
+
+    ts_energy_plot = ([e - E_min for e in ts_energy] if E_min is not None else ts_energy)
+
+    # Assembly fraction time series (None if not in trajectory).
+    has_asm = all_frames[0].get('nAssembled') is not None
+    ts_asm_frac = ([f.get('nAssembled', 0) / nCopies for f in all_frames]
+                   if has_asm else None)
 
     st_steps  = [s['step']        for s in stats]
     st_accept = [s['acceptRatio'] for s in stats]
@@ -266,30 +292,45 @@ def main():
     # Equal aspect last so imshow/patches don't override it.
     ax_anim.set_aspect('equal', adjustable='box')
 
-    # --- Energy panel ---
-    ax_ener.plot(ts_steps, ts_energy, color='#555555', lw=0.8, alpha=0.4)
+    # --- Energy panel (normalised if refEnergy present) ---
+    ax_ener.plot(ts_steps, ts_energy_plot, color='#555555', lw=0.8, alpha=0.4)
     ener_marker, = ax_ener.plot([], [], 'o', color='#e6194b', ms=5, zorder=5)
     ener_vline   = ax_ener.axvline(0, color='#e6194b', lw=0.8, ls='--', alpha=0.7)
+    if E_min is not None:
+        ax_ener.axhline(0, color='#aaaaaa', lw=0.6, ls=':')
+        ax_ener.set_ylabel("ΔE (above perfect assembly)", fontsize=8)
+        ax_ener.set_title("Excess energy", fontsize=8)
+    else:
+        ax_ener.set_ylabel("Energy", fontsize=8)
+        ax_ener.set_title("System energy", fontsize=8)
     ax_ener.set_xlabel("Step", fontsize=8)
-    ax_ener.set_ylabel("Energy", fontsize=8)
-    ax_ener.set_title("System energy", fontsize=8)
     ax_ener.tick_params(labelsize=7)
     if ts_steps:
         ax_ener.set_xlim(min(ts_steps), max(ts_steps))
 
-    # --- Gamma / accept-ratio panel ---
+    # --- Gamma / assembly / accept-ratio panel ---
     ax_gamma.plot(ts_steps, ts_gamma, color='steelblue', lw=1.0, alpha=0.7,
                   label='γ')
     gamma_marker, = ax_gamma.plot([], [], 'o', color='steelblue', ms=5, zorder=5)
     gamma_vline   = ax_gamma.axvline(0, color='steelblue', lw=0.8, ls='--', alpha=0.7)
     ax_gamma.set_xlabel("Step", fontsize=8)
-    ax_gamma.set_ylabel("γ", fontsize=8, color='steelblue')
+    ax_gamma.set_ylabel("γ  /  assembled fraction", fontsize=8, color='steelblue')
     ax_gamma.set_title("Coupling strength γ", fontsize=8)
     ax_gamma.set_ylim(-0.05, 1.05)
     ax_gamma.tick_params(labelsize=7, colors='steelblue')
     ax_gamma.spines['left'].set_color('steelblue')
     if ts_steps:
         ax_gamma.set_xlim(min(ts_steps), max(ts_steps))
+
+    # Assembled fraction overlaid on the gamma panel (same 0–1 scale).
+    asm_line_plot = None
+    asm_marker    = None
+    if ts_asm_frac is not None:
+        asm_line_plot, = ax_gamma.plot(ts_steps, ts_asm_frac,
+                                        color='purple', lw=1.0, alpha=0.7,
+                                        ls='--', label='assembled/N')
+        asm_marker, = ax_gamma.plot([], [], 'o', color='purple', ms=5, zorder=5)
+        ax_gamma.legend(fontsize=6, loc='lower right')
 
     ax2_accept = None
     accept_marker = None
@@ -345,18 +386,24 @@ def main():
                     )
                     bond_lines.append(ln)
 
+        n_asm = fr.get('nAssembled')
+        asm_str = f"  asm={n_asm}/{nCopies}" if n_asm is not None else ""
+        e_plot = fr['energy'] - E_min if E_min is not None else fr['energy']
         frame_text.set_text(
-            f"step {fr['step']}  E={fr['energy']:.0f}  γ={g:.3f}  [{fr.get('phase','main')}]"
+            f"step {fr['step']}  ΔE={e_plot:.0f}  γ={g:.3f}{asm_str}  [{fr.get('phase','main')}]"
         )
 
         s = fr['step']
-        ener_marker.set_data([s], [fr['energy']])
+        ener_marker.set_data([s], [e_plot])
         ener_vline.set_xdata([s, s])
         gamma_marker.set_data([s], [g])
         gamma_vline.set_xdata([s, s])
 
         artists = ([scat, frame_text, bg_img, ener_marker, ener_vline,
                     gamma_marker, gamma_vline] + bond_lines)
+        if asm_marker is not None and n_asm is not None:
+            asm_marker.set_data([s], [n_asm / nCopies])
+            artists.append(asm_marker)
         if accept_marker is not None:
             # Snap accept_marker to nearest stats step.
             if st_steps:

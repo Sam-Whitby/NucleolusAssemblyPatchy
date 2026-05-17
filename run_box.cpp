@@ -18,6 +18,7 @@
     --t-denat      N    denaturation iterations at gamma=0         [0]
     --copies       N    number of target complex copies            [4]
     --box-size     L    side length of the square periodic box     [20]
+    --t-after      N    steps at gamma=1 after main phase              [0]
     --anneal            ramp gamma 0→1 over --steps iterations
     --stokes            enable Stokes hydrodynamic drag (D ∝ 1/R)
     --phi-rot      φ    fraction of cluster rotation moves         [0.2]
@@ -164,6 +165,31 @@ static double referenceComplexEnergy(double J, double bbEnergy)
 }
 
 // ============================================================
+//  Count copies whose intra-copy pairwise energy equals refComplexEnergy
+//  within tolerance 0.5.  All complex energies are exact integer multiples
+//  of J and bbEnergy, so 0.5 cleanly separates assembled from non-assembled.
+// ============================================================
+static int countAssembled(BoxModel& model, const vector<Particle>& particles,
+                           int nCopies, double refComplexEnergy)
+{
+    int n = 0;
+    for (int c = 0; c < nCopies; c++) {
+        int base = c * N0;
+        double E = 0.0;
+        for (int i = base; i < base + N0; i++) {
+            for (int j = i+1; j < base + N0; j++) {
+                double e = model.computePairEnergy(
+                    i, &particles[i].position[0], &particles[i].orientation[0],
+                    j, &particles[j].position[0], &particles[j].orientation[0]);
+                if (e < 1e5) E += e;
+            }
+        }
+        if (fabs(E - refComplexEnergy) < 0.5) n++;
+    }
+    return n;
+}
+
+// ============================================================
 //  Place particles as assembled target complexes in a square grid.
 //  Copies are offset by 7 lattice units (3-unit gap > sqrt(5) range).
 // ============================================================
@@ -208,12 +234,13 @@ static void placeParticlesAssembled(vector<Particle>& particles,
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         int nCopies, double L_box,
                         long long step, double energy, double gamma,
+                        double refEnergy, int nAssembled,
                         const string& phase = "main")
 {
     int nParticles = (int)particles.size();
     fprintf(fp, "%d\n", nParticles);
-    fprintf(fp, "step=%lld energy=%.6f gamma=%.6f L=%.1f nCopies=%d phase=%s\n",
-            step, energy, gamma, L_box, nCopies, phase.c_str());
+    fprintf(fp, "step=%lld energy=%.6f gamma=%.6f L=%.1f nCopies=%d refEnergy=%.4f nAssembled=%d phase=%s\n",
+            step, energy, gamma, L_box, nCopies, refEnergy, nAssembled, phase.c_str());
     for (int i = 0; i < nParticles; i++) {
         int copy  = i / N0;
         int lid   = i % N0;
@@ -237,6 +264,7 @@ int main(int argc, char* argv[])
     long long nsnaps    = 1000;
     long long t_equil   = 0;
     long long t_denat   = 0;
+    long long t_after   = 0;
     int       nCopies   = 4;
     double    L_box     = 20.0;
     bool      useAnneal = false;
@@ -251,6 +279,7 @@ int main(int argc, char* argv[])
         else if (!strcmp(argv[i],"--snapshots")   && i+1<argc) { nsnaps      = atoll(argv[++i]); }
         else if (!strcmp(argv[i],"--t-equil")     && i+1<argc) { t_equil     = atoll(argv[++i]); }
         else if (!strcmp(argv[i],"--t-denat")     && i+1<argc) { t_denat     = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--t-after")     && i+1<argc) { t_after     = atoll(argv[++i]); }
         else if (!strcmp(argv[i],"--copies")      && i+1<argc) { nCopies     = atoi(argv[++i]); }
         else if (!strcmp(argv[i],"--box-size")    && i+1<argc) { L_box       = atof(argv[++i]); }
         else if (!strcmp(argv[i],"--anneal"))                  { useAnneal   = true; }
@@ -265,12 +294,14 @@ int main(int argc, char* argv[])
     }
 
     // Snapshot intervals distributed proportionally across all phases
-    long long totalSteps    = t_equil + t_denat + nsteps;
+    long long totalSteps    = t_equil + t_denat + nsteps + t_after;
     long long snaps_equil   = (totalSteps > 0 && t_equil > 0)
                               ? max(1LL, nsnaps * t_equil / totalSteps) : 0;
     long long snaps_denat   = (totalSteps > 0 && t_denat > 0)
                               ? max(1LL, nsnaps * t_denat / totalSteps) : 0;
-    long long snaps_main    = nsnaps - snaps_equil - snaps_denat;
+    long long snaps_after   = (totalSteps > 0 && t_after > 0)
+                              ? max(1LL, nsnaps * t_after / totalSteps) : 0;
+    long long snaps_main    = nsnaps - snaps_equil - snaps_denat - snaps_after;
     if (snaps_main < 1) snaps_main = 1;
 
     auto saveEvery = [](long long steps, long long snaps) -> long long {
@@ -280,10 +311,11 @@ int main(int argc, char* argv[])
     long long saveEvery_equil = saveEvery(t_equil, snaps_equil);
     long long saveEvery_denat = saveEvery(t_denat, snaps_denat);
     long long saveEvery_main  = saveEvery(nsteps,  snaps_main);
+    long long saveEvery_after = saveEvery(t_after,  snaps_after);
 
     cout << "=== Box Assembly Simulation (patchy model) ===" << endl;
     cout << "  steps=" << nsteps << " snapshots=" << nsnaps
-         << "  t_equil=" << t_equil << "  t_denat=" << t_denat
+         << "  t_equil=" << t_equil << "  t_denat=" << t_denat << "  t_after=" << t_after
          << "  copies=" << nCopies << "  box=" << L_box << "x" << L_box
          << "  anneal=" << useAnneal << " stokes=" << useStokes
          << "  phi_rot=" << phi_rot << "  phi_reorient=" << phi_reorient << endl;
@@ -396,15 +428,17 @@ int main(int argc, char* argv[])
         cerr << "Cannot open output files.\n";
         return 1;
     }
-    fprintf(fp_stat, "# step  energy  acceptRatio  gamma  phase\n");
+    fprintf(fp_stat, "# step  energy  acceptRatio  gamma  nAssembled  phase\n");
 
     // Write step-0 frame for the first active phase.
     auto writeStep0 = [&](const string& phase, double gamma) {
         model.uniformGamma = gamma;
         double initEnergy  = model.getEnergy() * nParticles;
-        writeFrame(fp_traj, particles, nCopies, L_box, 0, initEnergy, gamma, phase);
-        fprintf(fp_stat, "0  %.4f  0.0000  %.4f  %s\n",
-                initEnergy, gamma, phase.c_str());
+        int assembled      = countAssembled(model, particles, nCopies, refComplexEnergy);
+        writeFrame(fp_traj, particles, nCopies, L_box, 0, initEnergy, gamma,
+                   refComplexEnergy, assembled, phase);
+        fprintf(fp_stat, "0  %.4f  0.0000  %.4f  %d  %s\n",
+                initEnergy, gamma, assembled, phase.c_str());
     };
 
     {
@@ -431,9 +465,11 @@ int main(int argc, char* argv[])
                 double acceptRatio = (vmmc.getAttempts() > 0)
                                      ? (double)vmmc.getAccepts() / vmmc.getAttempts()
                                      : 0.0;
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 1.0, "equil");
-                fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  equil\n",
-                        step, energy, acceptRatio, 1.0);
+                int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
+                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 1.0,
+                           refComplexEnergy, assembled, "equil");
+                fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  equil\n",
+                        step, energy, acceptRatio, 1.0, assembled);
                 fflush(fp_stat);
             }
         }
@@ -454,9 +490,11 @@ int main(int argc, char* argv[])
                 double acceptRatio = (vmmc.getAttempts() > 0)
                                      ? (double)vmmc.getAccepts() / vmmc.getAttempts()
                                      : 0.0;
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 0.0, "denat");
-                fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  denat\n",
-                        step, energy, acceptRatio, 0.0);
+                int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
+                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 0.0,
+                           refComplexEnergy, assembled, "denat");
+                fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  denat\n",
+                        step, energy, acceptRatio, 0.0, assembled);
                 fflush(fp_stat);
             }
         }
@@ -486,9 +524,36 @@ int main(int argc, char* argv[])
                                      ? (double)vmmc.getAccepts() / vmmc.getAttempts()
                                      : 0.0;
                 double g = model.uniformGamma;
-                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, g, "main");
-                fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  main\n",
-                        step, energy, acceptRatio, g);
+                int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
+                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, g,
+                           refComplexEnergy, assembled, "main");
+                fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  main\n",
+                        step, energy, acceptRatio, g, assembled);
+                fflush(fp_stat);
+            }
+        }
+    }
+
+    // ============================================================
+    //  Phase 4: After (t_after steps at gamma=1, post-anneal equilibration)
+    // ============================================================
+    if (t_after > 0) {
+        model.uniformGamma = 1.0;
+        vmmc.reset();
+
+        for (long long step = 1; step <= t_after; step++) {
+            for (int k = 0; k < nParticles; k++) vmmc.step();
+
+            if (step % saveEvery_after == 0 || step == t_after) {
+                double energy      = model.getEnergy() * nParticles;
+                double acceptRatio = (vmmc.getAttempts() > 0)
+                                     ? (double)vmmc.getAccepts() / vmmc.getAttempts()
+                                     : 0.0;
+                int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
+                writeFrame(fp_traj, particles, nCopies, L_box, step, energy, 1.0,
+                           refComplexEnergy, assembled, "after");
+                fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  after\n",
+                        step, energy, acceptRatio, 1.0, assembled);
                 fflush(fp_stat);
             }
         }
