@@ -74,22 +74,24 @@ def parse_traj(path):
         hdr = lines[i].strip()
         i += 1
 
-        step            = int(_kv(hdr, 'step', 0))
-        energy          = float(_kv(hdr, 'energy', 0.0))
+        step             = int(_kv(hdr, 'step', 0))
+        energy           = float(_kv(hdr, 'energy', 0.0))
         # Support both old format (exited=X) and new format (exitedParticles=P, exitedPerfect=Q).
         exited_particles = int(_kv(hdr, 'exitedParticles') or _kv(hdr, 'exited', 0))
         exited_perfect   = int(_kv(hdr, 'exitedPerfect', 0))
-        R_c             = float(_kv(hdr, 'R_c', 60))
-        cx              = float(_kv(hdr, 'cx', R_c))
-        cy              = float(_kv(hdr, 'cy', R_c))
-        nCopies         = int(_kv(hdr, 'nCopies', 4))
-        coupling        = _kv(hdr, 'coupling', 'product')
-        gamma0          = float(_kv(hdr, 'gamma0', 0.0))
-        phase           = _kv(hdr, 'phase', 'main')
-        ref_e_s         = _kv(hdr, 'refEnergy',  None)
-        n_asm_s         = _kv(hdr, 'nAssembled', None)
-        refEnergy       = float(ref_e_s) if ref_e_s is not None else None
-        nAssembled      = int(n_asm_s)   if n_asm_s is not None else None
+        exited_full      = int(_kv(hdr, 'exitedFull', 0))
+        exit_quality     = float(_kv(hdr, 'exitQuality', 0.0))
+        R_c              = float(_kv(hdr, 'R_c', 60))
+        cx               = float(_kv(hdr, 'cx', R_c))
+        cy               = float(_kv(hdr, 'cy', R_c))
+        nCopies          = int(_kv(hdr, 'nCopies', 4))
+        coupling         = _kv(hdr, 'coupling', 'product')
+        gamma0           = float(_kv(hdr, 'gamma0', 0.0))
+        phase            = _kv(hdr, 'phase', 'main')
+        ref_e_s          = _kv(hdr, 'refEnergy',  None)
+        n_asm_s          = _kv(hdr, 'nAssembled', None)
+        refEnergy        = float(ref_e_s) if ref_e_s is not None else None
+        nAssembled       = int(n_asm_s)   if n_asm_s is not None else None
 
         particles = []
         for _ in range(n):
@@ -111,6 +113,8 @@ def parse_traj(path):
                 step=step, energy=energy,
                 exited_particles=exited_particles,
                 exited_perfect=exited_perfect,
+                exited_full=exited_full,
+                exit_quality=exit_quality,
                 R_c=R_c, cx=cx, cy=cy, nCopies=nCopies,
                 coupling=coupling, gamma0=gamma0,
                 phase=phase, particles=particles,
@@ -144,10 +148,12 @@ def main():
     cy     = frames[0]['cy']
     gamma0 = frames[0]['gamma0']
 
-    ts_steps   = [f['step']            for f in all_frames]
-    ts_energy  = [f['energy']          for f in all_frames]
+    ts_steps   = [f['step']             for f in all_frames]
+    ts_energy  = [f['energy']           for f in all_frames]
     ts_parts   = [f['exited_particles'] for f in all_frames]
     ts_perfect = [f['exited_perfect']   for f in all_frames]
+    ts_full    = [f['exited_full']      for f in all_frames]
+    ts_quality = [f['exit_quality']     for f in all_frames]
     ts_phases  = [f['phase']            for f in all_frames]
 
     # Normalise energy so that E_min (all complexes perfect) = 0.
@@ -163,11 +169,6 @@ def main():
         energy_ylabel = "ΔE  (E − E₀)"
         energy_title  = "System energy (baseline-subtracted)"
     ts_energy_rel = [e - E_min for e in ts_energy]
-
-    # Cumulative perfect-exit count (integer 0, 1, 2, ...).
-    has_asm     = frames[0].get('nAssembled') is not None
-    ts_asm_frac = ([f.get('nAssembled', 0) for f in all_frames]
-                   if has_asm else None)
 
     # ---------------------------------------------------------------------- #
     # Figure layout
@@ -260,32 +261,32 @@ def main():
     if ts_steps:
         ax_ener.set_xlim(min(ts_steps), max(ts_steps))
 
-    # --- Exits panel (total particles + perfect complexes) ---
-    ax_exits.plot(ts_steps, ts_parts,   color='#555555', lw=0.8, alpha=0.4,
-                  label='All particles')
-    ax_exits.plot(ts_steps, ts_perfect, color='#3cb44b', lw=0.8, alpha=0.6,
-                  label='Perfect complexes (×N0)')
-    parts_marker,   = ax_exits.plot([], [], 'o', color='#555555', ms=5, zorder=5)
-    perfect_marker, = ax_exits.plot([], [], 'o', color='#3cb44b', ms=5, zorder=5)
+    # --- Exits panel (perfect / full exits + exit quality) ---
+    ax_exits.plot(ts_steps, ts_perfect, color='purple', lw=1.0, alpha=0.8,
+                  label='Perfect exits')
+    ax_exits.plot(ts_steps, ts_full,    color='#888888', lw=0.8, alpha=0.5,
+                  ls='--', label='Full exits (any quality)')
+    perfect_marker, = ax_exits.plot([], [], 'o', color='purple', ms=5, zorder=5)
+    full_marker,    = ax_exits.plot([], [], 'o', color='#888888', ms=4, zorder=5)
     exits_vline     = ax_exits.axvline(0, color='#888888', lw=0.8, ls='--', alpha=0.7)
     ax_exits.set_xlabel("Step", fontsize=8)
-    ax_exits.set_ylabel("Cumulative count", fontsize=8)
-    ax_exits.set_title("Particles exited / assembly", fontsize=8)
+    ax_exits.set_ylabel("Cumulative exits", fontsize=8)
+    ax_exits.set_title("Exit count / quality", fontsize=8)
     ax_exits.tick_params(labelsize=7)
     ax_exits.legend(fontsize=6, loc='upper left')
     if ts_steps:
         ax_exits.set_xlim(min(ts_steps), max(ts_steps))
 
-    # Perfect-exit count on the right axis of the exits panel.
-    asm_marker = None
-    if ts_asm_frac is not None:
-        ax2_asm = ax_exits.twinx()
-        ax2_asm.plot(ts_steps, ts_asm_frac, color='purple', lw=1.0, alpha=0.7,
-                     ls='--', label='Perfect exits')
-        asm_marker, = ax2_asm.plot([], [], 'o', color='purple', ms=4, zorder=5)
-        ax2_asm.set_ylabel("Perfect complexes exited", fontsize=7, color='purple')
-        ax2_asm.tick_params(labelsize=6, colors='purple')
-        ax2_asm.spines['right'].set_color('purple')
+    # Exit quality (0–1) on right axis.
+    ax2_qual = ax_exits.twinx()
+    ax2_qual.plot(ts_steps, ts_quality, color='darkorange', lw=1.2, alpha=0.85,
+                  label='Exit quality')
+    ax2_qual.axhline(1.0, color='darkorange', lw=0.5, ls=':', alpha=0.4)
+    ax2_qual.set_ylim(-0.05, 1.05)
+    ax2_qual.set_ylabel("Exit quality  (perfect mass / total exited)", fontsize=7, color='darkorange')
+    ax2_qual.tick_params(labelsize=6, colors='darkorange')
+    ax2_qual.spines['right'].set_color('darkorange')
+    quality_marker, = ax2_qual.plot([], [], 'o', color='darkorange', ms=4, zorder=5)
 
     # ---------------------------------------------------------------------- #
     # Update function
@@ -320,29 +321,29 @@ def main():
                                        color=_BACKBONE_COLOR, lw=_BOND_LW, zorder=4)
                     bond_lines.append(ln)
 
-        phase = fr.get('phase', 'main')
-        n_asm = fr.get('nAssembled')
-        perfect_str = f"  perfect={n_asm}" if n_asm is not None else ""
+        phase      = fr.get('phase', 'main')
+        n_asm      = fr.get('nAssembled', 0)
+        eq         = fr.get('exit_quality', 0.0)
+        ef         = fr.get('exited_full', 0)
+        qual_str   = f"  qual={eq:.2f}" if ef > 0 else ""
         energy_rel = fr['energy'] - E_min
         frame_text.set_text(
-            f"step {fr['step']}  ΔE={energy_rel:.1f}{perfect_str}"
-            f"  exitParts={fr['exited_particles']}"
+            f"step {fr['step']}  ΔE={energy_rel:.1f}"
+            f"  perfect={n_asm}{qual_str}"
             f"  [{phase}]"
         )
 
         s = fr['step']
         ener_marker.set_data([s], [energy_rel])
         ener_vline.set_xdata([s, s])
-        parts_marker.set_data([s], [fr['exited_particles']])
         perfect_marker.set_data([s], [fr['exited_perfect']])
+        full_marker.set_data([s],    [fr['exited_full']])
+        quality_marker.set_data([s], [eq])
         exits_vline.set_xdata([s, s])
 
-        ret = ([scat, frame_text, ener_marker, ener_vline,
-                parts_marker, perfect_marker, exits_vline] + bond_lines)
-        if asm_marker is not None and n_asm is not None:
-            asm_marker.set_data([s], [n_asm])
-            ret.append(asm_marker)
-        return ret
+        return ([scat, frame_text, ener_marker, ener_vline,
+                 perfect_marker, full_marker, quality_marker,
+                 exits_vline] + bond_lines)
 
     ani = animation.FuncAnimation(
         fig, update,

@@ -41,15 +41,15 @@ y=0:  P2  P3  P3  P3        P3: (3,1)→(3,0)→(2,0)→(1,0)
 
 Active at d=1 and d=√2 between consecutive same-polymer segments.
 
-### Cross-polymer patch contacts (J = 8, gradient-scaled)
+### Cross-polymer patch contacts (J = 8 default, gradient-scaled)
 
 | Condition | d=1 |
 |---|---|
 | Patches aligned (both facing each other) | −J |
 | Patches misaligned | 0 |
-| d=√2 or beyond | 0 |
+| d > 1 | 0 |
 
-Same-type repulsions are absent; hard-core excluded volume (d<1) is sufficient.
+J is set with `--J` and is the same across all three simulation binaries. Same-type repulsions are absent; hard-core excluded volume (d<1) is sufficient.
 
 ### Patch slot convention (body frame)
 
@@ -64,7 +64,7 @@ Each particle has an orientation vector `(ox, oy)` ∈ {(1,0), (0,1), (-1,0), (0
 
 A bond forms only when the separation vector from i to j maps to an active patch slot of i **and** the separation vector from j to i maps to an active patch slot of j.
 
-### Reference complex energy
+### Reference complex energy (at J = 8)
 
 ```
 E_ref = 12 backbone bonds × (−1000) + 12 patch contacts × (−8) = −12 096
@@ -104,6 +104,7 @@ Linear gradient γ(x) = x/L. Hard wall at x=0, open at x>L. Exited particles are
 | `--snapshots N` | 1000 | Trajectory frames |
 | `--length L` | 60 | Column length (lattice units) |
 | `--width W` | 10 | Column width (periodic y) |
+| `--J J` | 8 | Weak patch coupling strength |
 | `--gradient` | off | Enable linear gradient |
 | `--stokes` | off | Stokes drag (D ∝ 1/R) |
 | `--phi-rot φ` | 0.2 | Cluster rotation fraction |
@@ -129,6 +130,12 @@ python3 visualize_nucleolus.py my_column_traj.txt --gradient-length 60 --width 1
 python3 visualize_nucleolus.py my_column_traj.txt --output my_column.mp4 --fps 10
 ```
 
+### Stats file columns
+
+```
+step  energy  nExited  acceptRatio  nAssembled
+```
+
 ---
 
 ## Circular model (`run_condensate`)
@@ -150,6 +157,7 @@ Radial gradient γ(r) = γ₀ + (1−γ₀)·r/R_c. Hard wall at centre, open at
 | `--copies N` | 4 | Number of complex copies |
 | `--radius R` | 60 | Condensate radius (lattice units) |
 | `--gamma0 γ` | 0.0 | Minimum coupling at r=0 |
+| `--J J` | 8 | Weak patch coupling strength |
 | `--gradient` | off | Enable radial gradient |
 | `--stokes` | off | Stokes drag |
 | `--coupling MODE` | `product` | `product` or `midpoint` coupling |
@@ -177,26 +185,16 @@ python3 visualize_condensate.py my_circle_traj.txt
 python3 visualize_condensate.py my_circle_traj.txt --output my_circle.mp4 --fps 10
 ```
 
----
-
-## Output files
-
-### `PREFIX_traj.txt`
+### Stats file columns
 
 ```
-<N_particles>
-step=S energy=E [phase/geometry fields]
-<id> <poly_type> <x> <y> <copy> <ox> <oy>
-...
+step  energy  exitedParticles  exitedPerfect  acceptRatio  phase  perfectExited  exitedFull  exitQuality
 ```
 
-`ox`, `oy` — world-frame orientation unit vector (updated by rotation and reorientation moves).
-
-### `PREFIX_stats.txt`
-
-```
-# step  energy  exitedParticles  exitedPerfect  acceptRatio  [phase]
-```
+- `exitedParticles` — cumulative particles that left (any fragment size)
+- `exitedPerfect` — cumulative perfectly assembled N0-particle complexes exited
+- `exitedFull` — cumulative N0-particle components with all distinct types (regardless of energy; diagnostic)
+- `exitQuality` — fraction of exiting mass in perfect complexes: `(exitedPerfect × N0) / exitedParticles` ∈ [0, 1]. A value of 1 means all exited mass is in perfect complexes; 0 means nothing exiting is a perfect complex (free fragments or misassembled structures of any size).
 
 ---
 
@@ -213,7 +211,7 @@ Four phases (all optional):
 | Main | `--steps N` | 1 (or ramped if `--anneal`) | Assembly / equilibration |
 | After | `--t-after N` | 1 | Post-anneal equilibration at full coupling |
 
-With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at outer iteration i (0-indexed), gamma = i/(N-1). Without `--anneal`, gamma=1 throughout the main phase. `--t-after` appends a γ=1 phase after main regardless of whether `--anneal` is used.
+With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps. Without `--anneal`, gamma=1 throughout the main phase.
 
 ### Usage
 
@@ -230,6 +228,7 @@ With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at 
 | `--t-after N` | 0 | Post-main iterations at gamma=1 |
 | `--copies N` | 4 | Number of complex copies |
 | `--box-size L` | 20 | Square box side length (lattice units) |
+| `--J J` | 8 | Weak patch coupling strength |
 | `--anneal` | off | Ramp gamma 0→1 over main-phase steps |
 | `--stokes` | off | Stokes drag (D ∝ 1/R) |
 | `--phi-rot φ` | 0.2 | Cluster rotation fraction |
@@ -247,12 +246,6 @@ With `--anneal`, gamma ramps linearly from 0 to 1 over the main-phase steps: at 
     --steps 50000  --anneal --t-after 10000 \
     --stokes       --phi-rot 0.2  --phi-reorient 0.2 \
     --seed 1       --output my_box
-
-# Fixed coupling (equilibrium at g=1)
-./run_box \
-    --copies 4     --box-size 30  \
-    --steps 100000 --stokes       \
-    --seed 1       --output equil_box
 ```
 
 ### Visualisation
@@ -262,14 +255,11 @@ python3 visualize_box.py my_box_traj.txt
 python3 visualize_box.py my_box_traj.txt --output my_box.mp4 --fps 10
 ```
 
-The left panel shows particles in the periodic square box.  The box background
-colour is a uniform blue tint whose intensity tracks γ.  The top-right panel
-shows **excess energy** ΔE = E − E_min, where E_min = copies × E_ref is the
-energy when all complexes are perfectly assembled (ΔE = 0 at perfect assembly).
-The bottom-right panel shows γ (steelblue) and the assembled fraction
-(dashed purple, same 0–1 axis) vs step, with VMMC acceptance ratio overlaid if
-a stats file is present.  The frame text shows the current assembled count as
-`asm=K/N` where K is the number of fully assembled copies out of N total.
+### Stats file columns
+
+```
+step  energy  acceptRatio  gamma  nAssembled  phase
+```
 
 ---
 
@@ -286,6 +276,7 @@ src/
   VMMC.h / VMMC.cpp        Core VMMC algorithm (cluster translation, rotation, reorientation)
   NucleolusModel.h / .cpp  Column geometry
   CondensateModel.h / .cpp Circular geometry
+  BoxModel.h / .cpp        Periodic box geometry
   Model.h / .cpp           Base class: energy, interactions, cell list
   StickySquare.h / .cpp    Kern-Frenkel patch energy on square lattice
   Box / CellList / Particle / Initialise / InputOutput

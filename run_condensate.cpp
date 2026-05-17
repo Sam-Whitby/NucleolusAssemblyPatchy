@@ -15,10 +15,16 @@
   grid near the condensate centre, spaced 3 lattice units apart so they do not
   interact.
 
-  Exit tracking (two separate counters written to files):
+  Exit tracking (counters written to stats and trajectory files):
     exitedParticles   — cumulative particles that left (any component size)
-    exitedPerfect     — cumulative perfectly assembled complexes that left
-                        (all 16 distinct local types present)
+    exitedPerfect     — cumulative perfectly assembled complexes that exited
+                        (all N0 distinct local types present, energy = E_ref)
+    exitedFull        — cumulative N0-particle components with all distinct
+                        types, regardless of assembly energy (diagnostic)
+    exitQuality       — fraction of exiting mass in perfect complexes:
+                        (exitedPerfect × N0) / exitedParticles  ∈ [0, 1]
+                        1 = all exited mass is perfect complexes
+                        0 = nothing exiting is a perfect complex
 
   Options
     --steps     N        main-phase outer iterations                    [10000]
@@ -35,6 +41,7 @@
     --phi-reorient φ     fraction of in-place reorientation moves       [0.2]
     --output    PREFIX   prefix for output files                        [condensate]
     --seed      S        RNG seed (0 = time-based)                     [1]
+    --J         J        weak patch coupling strength (gradient-scaled) [8.0]
 */
 
 #include <cmath>
@@ -326,9 +333,14 @@ static void placeParticlesTargetComplex(vector<Particle>& particles,
 //  Its particles are grouped by polymer, moved to stageX0, added to
 //  staged, and pushed onto injQueue.
 //
-//  Returns {totalParticlesExited, perfectComplexesExited}.
+//  Returns {particlesExited, perfectComplexesExited, fullComplexesExited}.
+//  fullComplexesExited: N0-particle components with all distinct local ids,
+//    regardless of energy — written to exitedFull for diagnostic use.
+//  exitQuality is computed in the caller as (perfectExited×N0)/totalParticles:
+//    fraction of all exiting mass that is in perfect complexes.
 // ============================================================
-static pair<int,int> handleExitsAndQueue(
+struct ExitCounts { int particles; int perfect; int fullComplex; };
+static ExitCounts handleExitsAndQueue(
     CondensateModel& model,
     vector<Particle>& particles,
     int nParticles,
@@ -384,8 +396,9 @@ static pair<int,int> handleExitsAndQueue(
         components.push_back(comp);
     }
 
-    int particlesExited = 0;
-    int perfectExited   = 0;
+    int particlesExited   = 0;
+    int perfectExited     = 0;
+    int fullComplexExited = 0;
     int icy = (int)round(cy);
 
     for (auto& comp : components) {
@@ -417,15 +430,15 @@ static pair<int,int> handleExitsAndQueue(
 
         particlesExited += (int)comp.size();
 
-        // A perfect complex: exactly N0 particles, all N0 distinct local ids
-        // present (one of each type from each of the 4 polymers), AND pair
-        // energy equals the reference native-structure energy (g=1).
+        // A full complex: exactly N0 particles with all N0 distinct local ids.
+        // A perfect complex additionally satisfies the native energy criterion.
         // Particles at r > R_c have γ(r) clamped to 1.0, so their pair energy
         // is the same as the reference regardless of phase or γ₀.
         if ((int)comp.size() == N0) {
             set<int> localIds;
             for (int gi : comp) localIds.insert(gi % N0);
             if ((int)localIds.size() == N0) {
+                fullComplexExited++;    // correct size and composition; may be misassembled
                 double E = componentPairEnergy(model, comp, particles);
                 if (fabs(E - refComplexEnergy) < 0.5) perfectExited++;
             }
@@ -460,7 +473,7 @@ static pair<int,int> handleExitsAndQueue(
         }
     }
 
-    return {particlesExited, perfectExited};
+    return {particlesExited, perfectExited, fullComplexExited};
 }
 
 // ============================================================
@@ -536,6 +549,7 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
                         int nCopies, double R_c, double cx, double cy,
                         long long step, double energy,
                         long long exitedParticles, long long exitedPerfect,
+                        long long exitedFull, double exitQuality,
                         const string& couplingLabel, double gamma0,
                         const string& phase, double refEnergy, int nAssembled)
 {
@@ -543,9 +557,11 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
     fprintf(fp, "%d\n", nParticles);
     fprintf(fp,
         "step=%lld energy=%.6f exitedParticles=%lld exitedPerfect=%lld"
+        " exitedFull=%lld exitQuality=%.4f"
         " R_c=%.1f cx=%.1f cy=%.1f nCopies=%d coupling=%s gamma0=%.4f phase=%s"
         " refEnergy=%.4f nAssembled=%d\n",
         step, energy, exitedParticles, exitedPerfect,
+        exitedFull, exitQuality,
         R_c, cx, cy, nCopies, couplingLabel.c_str(), gamma0, phase.c_str(),
         refEnergy, nAssembled);
     for (int i = 0; i < nParticles; i++) {
@@ -792,7 +808,7 @@ int main(int argc, char** argv)
         cerr << "Cannot open output files.\n";
         return 1;
     }
-    fprintf(fp_stat, "# step  energy  exitedParticles  exitedPerfect  acceptRatio  phase  perfectExited\n");
+    fprintf(fp_stat, "# step  energy  exitedParticles  exitedPerfect  acceptRatio  phase  perfectExited  exitedFull  exitQuality\n");
 
     // Set the phase gamma override before computing the initial energy so that
     // the step-0 snapshot reflects the same coupling as the first phase.
@@ -802,17 +818,18 @@ int main(int argc, char** argv)
 
     double initEnergy = model.getSystemEnergy();
     writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
-               0, initEnergy, 0, 0, couplingStr, gamma0, firstPhase,
+               0, initEnergy, 0, 0, 0, 0.0, couplingStr, gamma0, firstPhase,
                refComplexEnergy, 0);
-    fprintf(fp_stat, "0  %.4f  0  0  0.0000  %s  0\n",
+    fprintf(fp_stat, "0  %.4f  0  0  0.0000  %s  0  0  0.0000\n",
             initEnergy, firstPhase.c_str());
 
     clock_t startTime = clock();
-    long long globalStep          = 0;
-    long long totalParticlesExited = 0;
-    long long totalPerfectExited   = 0;
-    long long lifetimeAccepts     = 0;
-    long long lifetimeAttempts    = 0;
+    long long globalStep             = 0;
+    long long totalParticlesExited   = 0;
+    long long totalPerfectExited     = 0;
+    long long totalFullComplexExited = 0;
+    long long lifetimeAccepts        = 0;
+    long long lifetimeAttempts       = 0;
 
     // Helper: run one phase of the simulation.
     auto runPhase = [&](long long phaseSteps, long long saveEveryN, const string& phaseName) {
@@ -820,12 +837,13 @@ int main(int argc, char** argv)
         cout << "--- Phase: " << phaseName << "  (" << phaseSteps << " steps) ---" << endl;
         for (long long s = 1; s <= phaseSteps; s++) {
             vmmc += nParticles;
-            pair<int,int> exitResult = handleExitsAndQueue(model, particles, nParticles,
-                                                            cells, box, cx, cy, R_c, vmmc,
-                                                            injQueue, staged, stageX0,
-                                                            refComplexEnergy);
-            totalParticlesExited += exitResult.first;
-            totalPerfectExited   += exitResult.second;
+            ExitCounts exitResult = handleExitsAndQueue(model, particles, nParticles,
+                                                         cells, box, cx, cy, R_c, vmmc,
+                                                         injQueue, staged, stageX0,
+                                                         refComplexEnergy);
+            totalParticlesExited   += exitResult.particles;
+            totalPerfectExited     += exitResult.perfect;
+            totalFullComplexExited += exitResult.fullComplex;
             tryInjectNext(particles, nParticles, cells, box, vmmc, cx, cy, injQueue, staged);
             globalStep++;
 
@@ -838,15 +856,20 @@ int main(int argc, char** argv)
                                      ? (double)vmmc.getAccepts() / (double)vmmc.getAttempts()
                                      : 0.0;
                 if (doSave) {
+                    double exitQuality = (totalParticlesExited > 0)
+                        ? (double)(totalPerfectExited * N0) / (double)totalParticlesExited
+                        : 0.0;
                     writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
                                globalStep, energy,
                                totalParticlesExited, totalPerfectExited,
+                               totalFullComplexExited, exitQuality,
                                couplingStr, gamma0, phaseName, refComplexEnergy,
                                (int)totalPerfectExited);
-                    fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s  %lld\n",
+                    fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s  %lld  %lld  %.4f\n",
                             globalStep, energy,
                             totalParticlesExited, totalPerfectExited,
-                            acceptRatio, phaseName.c_str(), totalPerfectExited);
+                            acceptRatio, phaseName.c_str(), totalPerfectExited,
+                            totalFullComplexExited, exitQuality);
                     lifetimeAccepts  += vmmc.getAccepts();
                     lifetimeAttempts += vmmc.getAttempts();
                     vmmc.reset(); // windowed ratio: reset counters after each snapshot
@@ -877,7 +900,13 @@ int main(int argc, char** argv)
     double simTime = (clock() - startTime) / (double)CLOCKS_PER_SEC;
     cout << "Done! Time = " << simTime << " s (" << simTime/60.0 << " min)" << endl;
     cout << "Total particles exited: " << totalParticlesExited << endl;
+    cout << "Full-size complexes exited: " << totalFullComplexExited << endl;
     cout << "Perfect complexes exited: " << totalPerfectExited << endl;
+    {
+        double finalQuality = (totalParticlesExited > 0)
+            ? (double)(totalPerfectExited * N0) / (double)totalParticlesExited : 0.0;
+        cout << "Exit quality: " << finalQuality << endl;
+    }
     cout << "Acceptance ratio: "
          << (lifetimeAttempts > 0 ? (double)lifetimeAccepts / (double)lifetimeAttempts : 0.0)
          << endl;
