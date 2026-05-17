@@ -164,9 +164,9 @@ def main():
         energy_title  = "System energy (baseline-subtracted)"
     ts_energy_rel = [e - E_min for e in ts_energy]
 
-    # Assembly fraction time series.
+    # Cumulative perfect-exit count (integer 0, 1, 2, ...).
     has_asm     = frames[0].get('nAssembled') is not None
-    ts_asm_frac = ([f.get('nAssembled', 0) / nCopies_f for f in all_frames]
+    ts_asm_frac = ([f.get('nAssembled', 0) for f in all_frames]
                    if has_asm else None)
 
     # ---------------------------------------------------------------------- #
@@ -276,15 +276,14 @@ def main():
     if ts_steps:
         ax_exits.set_xlim(min(ts_steps), max(ts_steps))
 
-    # Assembly fraction on the right axis of the exits panel.
+    # Perfect-exit count on the right axis of the exits panel.
     asm_marker = None
     if ts_asm_frac is not None:
         ax2_asm = ax_exits.twinx()
         ax2_asm.plot(ts_steps, ts_asm_frac, color='purple', lw=1.0, alpha=0.7,
-                     ls='--', label='assembled/N')
+                     ls='--', label='Perfect exits')
         asm_marker, = ax2_asm.plot([], [], 'o', color='purple', ms=4, zorder=5)
-        ax2_asm.set_ylabel("Assembled / N", fontsize=7, color='purple')
-        ax2_asm.set_ylim(-0.05, 1.05)
+        ax2_asm.set_ylabel("Perfect complexes exited", fontsize=7, color='purple')
         ax2_asm.tick_params(labelsize=6, colors='purple')
         ax2_asm.spines['right'].set_color('purple')
 
@@ -322,13 +321,12 @@ def main():
                     bond_lines.append(ln)
 
         phase = fr.get('phase', 'main')
-        n_cop = fr.get('nCopies', nCopies_f)
         n_asm = fr.get('nAssembled')
-        asm_str = f"  asm={n_asm}/{n_cop}" if n_asm is not None else ""
+        perfect_str = f"  perfect={n_asm}" if n_asm is not None else ""
         energy_rel = fr['energy'] - E_min
         frame_text.set_text(
-            f"step {fr['step']}  ΔE={energy_rel:.1f}{asm_str}"
-            f"  exitParts={fr['exited_particles']}  perfect={fr['exited_perfect']}"
+            f"step {fr['step']}  ΔE={energy_rel:.1f}{perfect_str}"
+            f"  exitParts={fr['exited_particles']}"
             f"  [{phase}]"
         )
 
@@ -342,7 +340,7 @@ def main():
         ret = ([scat, frame_text, ener_marker, ener_vline,
                 parts_marker, perfect_marker, exits_vline] + bond_lines)
         if asm_marker is not None and n_asm is not None:
-            asm_marker.set_data([s], [n_asm / n_cop])
+            asm_marker.set_data([s], [n_asm])
             ret.append(asm_marker)
         return ret
 

@@ -757,7 +757,9 @@ int main(int argc, char** argv)
     // --- Simulation loop ---
     cout << "Starting simulation..." << endl;
     clock_t startTime = clock();
-    long long totalExited = 0;
+    long long totalExited      = 0;
+    long long lifetimeAccepts  = 0;
+    long long lifetimeAttempts = 0;
 
     static int totalBBViolations = 0;
     static bool firstViolationFound = false;
@@ -821,6 +823,8 @@ int main(int argc, char** argv)
                        step, energy, totalExited, refComplexEnergy, assembled);
             fprintf(fp_stat, "%lld  %.4f  %lld  %.4f  %d\n",
                     step, energy, totalExited, acceptRatio, assembled);
+            lifetimeAccepts  += vmmc.getAccepts();
+            lifetimeAttempts += vmmc.getAttempts();
             vmmc.reset(); // windowed ratio: reset counters after each snapshot
         }
 
@@ -837,7 +841,8 @@ int main(int argc, char** argv)
     cout << "Total backbone violations (outer-step snapshots): " << totalBBViolations << endl;
     cout << "Total exited complexes: " << totalExited << endl;
     cout << "Acceptance ratio: "
-         << (double)vmmc.getAccepts() / (double)vmmc.getAttempts() << endl;
+         << (lifetimeAttempts > 0 ? (double)lifetimeAccepts / (double)lifetimeAttempts : 0.0)
+         << endl;
 
     fclose(fp_traj);
     fclose(fp_stat);

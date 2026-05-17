@@ -793,22 +793,27 @@ int main(int argc, char** argv)
         cerr << "Cannot open output files.\n";
         return 1;
     }
-    fprintf(fp_stat, "# step  energy  exitedParticles  exitedPerfect  acceptRatio  phase  nAssembled\n");
+    fprintf(fp_stat, "# step  energy  exitedParticles  exitedPerfect  acceptRatio  phase  perfectExited\n");
 
-    // Write step-0 frame (assembled, phase=equil or main depending on what follows).
-    double initEnergy    = model.getSystemEnergy();
-    int    initAssembled = countAssembled(model, particles, nCopies, refComplexEnergy);
-    string firstPhase    = (t_equil > 0) ? "equil" : (t_denat > 0) ? "denat" : "main";
+    // Set the phase gamma override before computing the initial energy so that
+    // the step-0 snapshot reflects the same coupling as the first phase.
+    string firstPhase   = (t_equil > 0) ? "equil" : (t_denat > 0) ? "denat" : "main";
+    int    firstOverride = (t_equil > 0) ? 0 : (t_denat > 0) ? 1 : -1;
+    model.phaseGOverride = firstOverride;
+
+    double initEnergy = model.getSystemEnergy();
     writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
                0, initEnergy, 0, 0, couplingStr, gamma0, firstPhase,
-               refComplexEnergy, initAssembled);
-    fprintf(fp_stat, "0  %.4f  0  0  0.0000  %s  %d\n",
-            initEnergy, firstPhase.c_str(), initAssembled);
+               refComplexEnergy, 0);
+    fprintf(fp_stat, "0  %.4f  0  0  0.0000  %s  0\n",
+            initEnergy, firstPhase.c_str());
 
     clock_t startTime = clock();
     long long globalStep          = 0;
     long long totalParticlesExited = 0;
     long long totalPerfectExited   = 0;
+    long long lifetimeAccepts     = 0;
+    long long lifetimeAttempts    = 0;
 
     // Helper: run one phase of the simulation.
     auto runPhase = [&](long long phaseSteps, long long saveEveryN, const string& phaseName) {
@@ -830,15 +835,17 @@ int main(int argc, char** argv)
 
             bool doSave = (s % saveEveryN == 0) || (s == phaseSteps);
             if (doSave) {
-                int assembled = countAssembled(model, particles, nCopies, refComplexEnergy);
                 writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
                            globalStep, energy,
                            totalParticlesExited, totalPerfectExited,
-                           couplingStr, gamma0, phaseName, refComplexEnergy, assembled);
-                fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s  %d\n",
+                           couplingStr, gamma0, phaseName, refComplexEnergy,
+                           (int)totalPerfectExited);
+                fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s  %lld\n",
                         globalStep, energy,
                         totalParticlesExited, totalPerfectExited,
-                        acceptRatio, phaseName.c_str(), assembled);
+                        acceptRatio, phaseName.c_str(), totalPerfectExited);
+                lifetimeAccepts  += vmmc.getAccepts();
+                lifetimeAttempts += vmmc.getAttempts();
                 vmmc.reset(); // windowed ratio: reset counters after each snapshot
             }
 
@@ -869,7 +876,8 @@ int main(int argc, char** argv)
     cout << "Total particles exited: " << totalParticlesExited << endl;
     cout << "Perfect complexes exited: " << totalPerfectExited << endl;
     cout << "Acceptance ratio: "
-         << (double)vmmc.getAccepts() / (double)vmmc.getAttempts() << endl;
+         << (lifetimeAttempts > 0 ? (double)lifetimeAccepts / (double)lifetimeAttempts : 0.0)
+         << endl;
 
     fclose(fp_traj);
     fclose(fp_stat);
