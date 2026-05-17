@@ -118,11 +118,19 @@ unsigned int Model::computeInteractions(unsigned int particle,
     // Interaction counter.
     unsigned int nInteractions = 0;
 
+    // Compute the cell index from the PROPOSED position, not the stored cell.
+    // This is critical for cluster rotation moves: a rotation can displace a particle
+    // far from its original cell, so searching from the old cell would miss environment
+    // particles at the new position, causing hard-core overlaps to go undetected.
+    Particle tempParticle;
+    tempParticle.position.assign(position, position + box.dimension);
+    int startCell = cells.getCell(tempParticle);
+
     // Check all neighbouring cells including same cell.
     for (unsigned int i=0;i<cells.getNeighbours();i++)
     {
         // Cell index.
-        unsigned int cell = cells[particles[particle].cell].neighbours[i];
+        unsigned int cell = cells[startCell].neighbours[i];
 
         // Check all particles within cell.
         for (unsigned int j=0;j<cells[cell].tally;j++)
@@ -153,7 +161,20 @@ unsigned int Model::computeInteractions(unsigned int particle,
                 {
                     if (nInteractions == maxInteractions)
                     {
-                        std::cerr << "[ERROR] Model: Maximum number of interactions exceeded!\n";
+                        std::cerr << "[ERROR] Model: Maximum number of interactions exceeded!"
+                                  << " particle=" << particle
+                                  << " pos=(" << position[0] << "," << position[1] << ")"
+                                  << " startCell=" << startCell << "\n";
+                        for (unsigned int di=0;di<nInteractions;di++) {
+                            unsigned int ni = interactions[di];
+                            std::cerr << "  [" << di << "] p=" << ni
+                                      << " pos=(" << particles[ni].position[0] << "," << particles[ni].position[1] << ")"
+                                      << " d2=" << (  (position[0]-particles[ni].position[0])*(position[0]-particles[ni].position[0])
+                                                    + (position[1]-particles[ni].position[1])*(position[1]-particles[ni].position[1])) << "\n";
+                        }
+                        std::cerr << "  pending: p=" << neighbour
+                                  << " pos=(" << particles[neighbour].position[0] << "," << particles[neighbour].position[1] << ")"
+                                  << " normSqd=" << normSqd << "\n";
                         exit(EXIT_FAILURE);
                     }
 

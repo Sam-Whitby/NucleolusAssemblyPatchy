@@ -96,13 +96,10 @@ double BoxModel::computePairEnergy(
         if (!interactions.weakD1.empty()) {
             bool patchOk = true;
             if (!isBackbone && interactions.patchesEnabled && !interactions.patchSlots.empty()) {
-                // Direction from p1 to p2 in world frame.
                 int dx12 = (int)round(-sep[0]);
                 int dy12 = (int)round(-sep[1]);
-                // Rotate into p1's local frame (R^{-T} where R maps local→world).
                 int lx1 = (int)round( dx12 * orientation1[0] + dy12 * orientation1[1]);
                 int ly1 = (int)round(-dx12 * orientation1[1] + dy12 * orientation1[0]);
-                // Direction from p2 to p1, rotated into p2's local frame.
                 int lx2 = (int)round(-dx12 * orientation2[0] - dy12 * orientation2[1]);
                 int ly2 = (int)round( dx12 * orientation2[1] - dy12 * orientation2[0]);
                 auto toSlot = [](int lx, int ly) -> int {
