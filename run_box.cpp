@@ -295,7 +295,7 @@ int main(int argc, char* argv[])
 
     const unsigned int dimension       = 2;
     const double interactionRange      = 2.5;
-    const unsigned int maxInteractions = 30;
+    const unsigned int maxInteractions = 100;
     const double interactionEnergy     = 0.0;
     const bool isLattice               = true;
 
