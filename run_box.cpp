@@ -474,6 +474,7 @@ int main(int argc, char* argv[])
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  equil\n",
                         stepOffset + step, energy, acceptRatio, 1.0, assembled);
                 fflush(fp_stat);
+                vmmc.reset(); // windowed ratio: reset counters after each snapshot
             }
         }
         stepOffset += t_equil;
@@ -500,6 +501,7 @@ int main(int argc, char* argv[])
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  denat\n",
                         stepOffset + step, energy, acceptRatio, 0.0, assembled);
                 fflush(fp_stat);
+                vmmc.reset(); // windowed ratio: reset counters after each snapshot
             }
         }
         stepOffset += t_denat;
@@ -535,6 +537,7 @@ int main(int argc, char* argv[])
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  main\n",
                         stepOffset + step, energy, acceptRatio, g, assembled);
                 fflush(fp_stat);
+                vmmc.reset(); // windowed ratio: reset counters after each snapshot
             }
         }
         stepOffset += nsteps;
@@ -561,6 +564,7 @@ int main(int argc, char* argv[])
                 fprintf(fp_stat, "%lld  %.4f  %.4f  %.4f  %d  after\n",
                         stepOffset + step, energy, acceptRatio, 1.0, assembled);
                 fflush(fp_stat);
+                vmmc.reset(); // windowed ratio: reset counters after each snapshot
             }
         }
     }

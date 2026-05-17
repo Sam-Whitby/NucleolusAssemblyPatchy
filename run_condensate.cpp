@@ -839,6 +839,7 @@ int main(int argc, char** argv)
                         globalStep, energy,
                         totalParticlesExited, totalPerfectExited,
                         acceptRatio, phaseName.c_str(), assembled);
+                vmmc.reset(); // windowed ratio: reset counters after each snapshot
             }
 
             if (s % max(1LL, phaseSteps/10) == 0) {

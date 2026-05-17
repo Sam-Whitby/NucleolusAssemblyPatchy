@@ -821,6 +821,7 @@ int main(int argc, char** argv)
                        step, energy, totalExited, refComplexEnergy, assembled);
             fprintf(fp_stat, "%lld  %.4f  %lld  %.4f  %d\n",
                     step, energy, totalExited, acceptRatio, assembled);
+            vmmc.reset(); // windowed ratio: reset counters after each snapshot
         }
 
         if (step % max(1LL, nsteps/20) == 0) {
