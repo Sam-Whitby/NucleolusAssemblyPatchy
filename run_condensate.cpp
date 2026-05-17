@@ -312,59 +312,19 @@ static void placeParticlesTargetComplex(vector<Particle>& particles,
 
 
 // ============================================================
-//  Interaction-graph connected components (BFS over pair energy).
-//  Staged particles are entirely excluded from the graph.
-// ============================================================
-static int buildComponents(CondensateModel& model,
-                            vector<Particle>& particles,
-                            int nParticles,
-                            vector<int>& fragmentID,
-                            vector<vector<int>>& components,
-                            const set<int>& staged)
-{
-    fragmentID.assign(nParticles, -1);
-    components.clear();
-    int nfrag = 0;
-    const int maxInt = 30;
-    unsigned int nbrs[maxInt];
-
-    for (int i = 0; i < nParticles; i++) {
-        if (fragmentID[i] != -1) continue;
-        if (staged.count(i)) continue;
-        vector<int> comp = {i};
-        fragmentID[i] = nfrag;
-
-        for (int ci = 0; ci < (int)comp.size(); ci++) {
-            int j = comp[ci];
-            int nn = (int)model.computeInteractions(
-                j, &particles[j].position[0], &particles[j].orientation[0], nbrs);
-            for (int k = 0; k < nn; k++) {
-                int nbr = (int)nbrs[k];
-                if (fragmentID[nbr] != -1) continue;
-                if (staged.count(nbr)) continue;
-                double e = model.computePairEnergy(
-                    j,   &particles[j].position[0],   &particles[j].orientation[0],
-                    nbr, &particles[nbr].position[0], &particles[nbr].orientation[0]);
-                if (e != 0.0 && e < 1e5) {
-                    fragmentID[nbr] = nfrag;
-                    comp.push_back(nbr);
-                }
-            }
-        }
-        components.push_back(comp);
-        nfrag++;
-    }
-    return nfrag;
-}
-
-// ============================================================
 //  Detect exiting isolated components, count exits, move to
 //  staging area, and enqueue for later ring injection.
 //
-//  Any isolated component (no non-staged neighbours outside the
-//  component) with all particles at r > R_c is "exited".
-//  Its particles are grouped by polymer, moved to stageX0, added
-//  to staged, and pushed onto injQueue.
+//  Fast path: O(N) arithmetic pre-scan finds particles with r > R_c.
+//  If none exist, returns {0,0} immediately (no pair evaluations).
+//  Otherwise, BFS expands only the connected clusters that contain at
+//  least one outside particle; clusters entirely inside R_c are never
+//  visited, saving most of the component-building work.
+//
+//  Any such component that is fully outside R_c and isolated (no
+//  bonded non-staged neighbours outside the component) is "exited".
+//  Its particles are grouped by polymer, moved to stageX0, added to
+//  staged, and pushed onto injQueue.
 //
 //  Returns {totalParticlesExited, perfectComplexesExited}.
 // ============================================================
@@ -380,14 +340,52 @@ static pair<int,int> handleExitsAndQueue(
     int stageX0,
     double refComplexEnergy)
 {
-    vector<int> fragmentID;
+    // --- Fast pre-scan: collect seeds (non-staged particles outside R_c) ---
+    const double Rc2 = R_c * R_c;
+    vector<int> outsideSeeds;
+    for (int i = 0; i < nParticles; i++) {
+        if (staged.count(i)) continue;
+        double dx = particles[i].position[0] - cx;
+        double dy = particles[i].position[1] - cy;
+        if (dx*dx + dy*dy > Rc2) outsideSeeds.push_back(i);
+    }
+    if (outsideSeeds.empty()) return {0, 0};
+
+    // --- Targeted BFS: expand each seed to its full connected cluster ---
+    // Inside-only clusters (no outside particle) are never visited.
+    const int maxInt = 30;
+    unsigned int nbrs[maxInt];
+    vector<int> visited(nParticles, -1);
     vector<vector<int>> components;
-    buildComponents(model, particles, nParticles, fragmentID, components, staged);
+
+    for (int seed : outsideSeeds) {
+        if (visited[seed] != -1) continue;  // already found via another seed
+        int compIdx = (int)components.size();
+        vector<int> comp = {seed};
+        visited[seed] = compIdx;
+
+        for (int ci = 0; ci < (int)comp.size(); ci++) {
+            int j = comp[ci];
+            int nn = (int)model.computeInteractions(
+                j, &particles[j].position[0], &particles[j].orientation[0], nbrs);
+            for (int k = 0; k < nn; k++) {
+                int nbr = (int)nbrs[k];
+                if (visited[nbr] != -1) continue;
+                if (staged.count(nbr)) continue;
+                double e = model.computePairEnergy(
+                    j,   &particles[j].position[0],   &particles[j].orientation[0],
+                    nbr, &particles[nbr].position[0], &particles[nbr].orientation[0]);
+                if (e != 0.0 && e < 1e5) {
+                    visited[nbr] = compIdx;
+                    comp.push_back(nbr);
+                }
+            }
+        }
+        components.push_back(comp);
+    }
 
     int particlesExited = 0;
     int perfectExited   = 0;
-    const int maxInt = 30;
-    unsigned int nbrs[maxInt];
     int icy = (int)round(cy);
 
     for (auto& comp : components) {
@@ -831,31 +829,35 @@ int main(int argc, char** argv)
             tryInjectNext(particles, nParticles, cells, box, vmmc, cx, cy, injQueue, staged);
             globalStep++;
 
-            double energy      = model.getSystemEnergy();
-            double acceptRatio = (double)vmmc.getAccepts() / (double)vmmc.getAttempts();
+            bool doSave     = (s % saveEveryN == 0) || (s == phaseSteps);
+            bool doProgress = (s % max(1LL, phaseSteps/10) == 0);
 
-            bool doSave = (s % saveEveryN == 0) || (s == phaseSteps);
-            if (doSave) {
-                writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
-                           globalStep, energy,
-                           totalParticlesExited, totalPerfectExited,
-                           couplingStr, gamma0, phaseName, refComplexEnergy,
-                           (int)totalPerfectExited);
-                fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s  %lld\n",
-                        globalStep, energy,
-                        totalParticlesExited, totalPerfectExited,
-                        acceptRatio, phaseName.c_str(), totalPerfectExited);
-                lifetimeAccepts  += vmmc.getAccepts();
-                lifetimeAttempts += vmmc.getAttempts();
-                vmmc.reset(); // windowed ratio: reset counters after each snapshot
-            }
-
-            if (s % max(1LL, phaseSteps/10) == 0) {
-                cout << "  [" << phaseName << "] step " << s << "/" << phaseSteps
-                     << "  E=" << energy
-                     << "  exitParts=" << totalParticlesExited
-                     << "  exitPerfect=" << totalPerfectExited
-                     << "  accept=" << acceptRatio << "\n";
+            if (doSave || doProgress) {
+                double energy      = model.getSystemEnergy();
+                double acceptRatio = (vmmc.getAttempts() > 0)
+                                     ? (double)vmmc.getAccepts() / (double)vmmc.getAttempts()
+                                     : 0.0;
+                if (doSave) {
+                    writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
+                               globalStep, energy,
+                               totalParticlesExited, totalPerfectExited,
+                               couplingStr, gamma0, phaseName, refComplexEnergy,
+                               (int)totalPerfectExited);
+                    fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s  %lld\n",
+                            globalStep, energy,
+                            totalParticlesExited, totalPerfectExited,
+                            acceptRatio, phaseName.c_str(), totalPerfectExited);
+                    lifetimeAccepts  += vmmc.getAccepts();
+                    lifetimeAttempts += vmmc.getAttempts();
+                    vmmc.reset(); // windowed ratio: reset counters after each snapshot
+                }
+                if (doProgress) {
+                    cout << "  [" << phaseName << "] step " << s << "/" << phaseSteps
+                         << "  E=" << energy
+                         << "  exitParts=" << totalParticlesExited
+                         << "  exitPerfect=" << totalPerfectExited
+                         << "  accept=" << acceptRatio << "\n";
+                }
             }
         }
     };
