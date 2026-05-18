@@ -66,7 +66,8 @@ double BoxModel::computePairEnergy(
     int id1 = (int)particle1 % n0;
     int id2 = (int)particle2 % n0;
 
-    bool sameChain = ((int)particle1 / n0 == (int)particle2 / n0) &&
+    bool sameChain = !singleChain &&
+                     ((int)particle1 / n0 == (int)particle2 / n0) &&
                      (id1 / 4 == id2 / 4);
 
     // Uniform coupling — no position dependence.

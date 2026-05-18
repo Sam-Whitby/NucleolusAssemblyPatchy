@@ -19,6 +19,7 @@ class BoxModel : public StickySquare
 {
 public:
     double uniformGamma;  //!< Global coupling factor (0 = denatured, 1 = fully coupled).
+    bool   singleChain = false;  //!< When true, disables same-chain suppression (single folding chain).
 
     BoxModel(Box&, std::vector<Particle>&, CellList&,
              unsigned int maxInteractions, double interactionEnergy,
