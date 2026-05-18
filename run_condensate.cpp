@@ -884,10 +884,15 @@ int main(int argc, char** argv)
     // Hard wall: centre lattice point (d²<0.5) is always forbidden.
     // Staged particles are frozen.
     // Centre-particle constraint (single-chain only): while the most recently
-    // injected threading particle sits at (icx,icy), any proposed move that
-    // would carry it more than 1 lattice unit from the centre is rejected.
-    // This guarantees the centre vacates by exactly 1 unit, keeping it free
-    // for the next particle and preserving the backbone bond (distance = 1).
+    // injected threading particle is within 1 lattice unit of the centre, any
+    // proposed move that would carry it beyond 1 unit is rejected.
+    // This keeps the particle in the {N,E,S,W} ring adjacent to the centre
+    // until the next particle is injected at the centre, guaranteeing the
+    // backbone bond (distance = 1) is intact at injection time.
+    // Note: without this extended constraint, the particle would take its first
+    // allowed step to distance 1, then freely diffuse to distance 2+ before the
+    // next injection fires (since the next staged particle exerts no backbone
+    // energy until it is placed in the simulation).
     callbacks.boundaryCallback =
         [cx, cy, icx, icy, singleChain,
          &staged, &threadingChain, &threadingIdx, &particles]
@@ -903,8 +908,9 @@ int main(int argc, char** argv)
                 if ((int)pid == centerPid) {
                     double curX = particles[centerPid].position[0];
                     double curY = particles[centerPid].position[1];
-                    // Only constrain while the particle is AT the centre.
-                    if (fabs(curX - icx) < 0.5 && fabs(curY - icy) < 0.5) {
+                    double curDistSq = (curX - icx)*(curX - icx) + (curY - icy)*(curY - icy);
+                    // Constrain while particle is at centre or one step away (≤1 unit).
+                    if (curDistSq < 1.0 + 1e-6) {
                         double ndx = pos[0] - icx, ndy = pos[1] - icy;
                         if (ndx*ndx + ndy*ndy > 1.0 + 1e-6) return true;  // reject
                     }
