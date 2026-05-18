@@ -573,8 +573,10 @@ static void tryInjectNext(
 }
 
 // ============================================================
-//  tryThreadNext — single-chain centre threading
-//  One particle per call, placed at the condensate centre.
+//  tryThreadNext — single-chain threading
+//  First particle is placed at the condensate centre.
+//  Each subsequent particle is placed adjacent (cardinal) to the previous one
+//  so backbone bonds are never broken during injection.
 //  Starts a new chain from injQueue when threadingChain is empty.
 // ============================================================
 static void tryThreadNext(
@@ -597,18 +599,48 @@ static void tryThreadNext(
         return;
     }
 
-    // Check centre is free of non-staged particles
-    for (int gi = 0; gi < nParticles; gi++) {
-        if (staged.count(gi)) continue;
-        double dx = particles[gi].position[0] - icx;
-        double dy = particles[gi].position[1] - icy;
-        if (fabs(dx) < 0.5 && fabs(dy) < 0.5) return;
+    int tx, ty;  // target lattice position for the new particle
+
+    if (threadingIdx == 0) {
+        // First particle: enter at the condensate centre
+        for (int gi = 0; gi < nParticles; gi++) {
+            if (staged.count(gi)) continue;
+            double dx = particles[gi].position[0] - icx;
+            double dy = particles[gi].position[1] - icy;
+            if (fabs(dx) < 0.5 && fabs(dy) < 0.5) return;  // centre occupied
+        }
+        tx = icx; ty = icy;
+    } else {
+        // Subsequent particles: place adjacent to the previous particle so the
+        // backbone bond (distance 1) is immediately satisfied.
+        int prev = threadingChain[threadingIdx - 1];
+        int px = (int)round(particles[prev].position[0]);
+        int py = (int)round(particles[prev].position[1]);
+
+        const int ddx[4] = { 1, -1,  0,  0 };
+        const int ddy[4] = { 0,  0,  1, -1 };
+        int chosen = -1;
+        for (int d = 0; d < 4; d++) {
+            int cx_ = px + ddx[d];
+            int cy_ = py + ddy[d];
+            bool free = true;
+            for (int gi = 0; gi < nParticles; gi++) {
+                if (staged.count(gi)) continue;
+                double ex = particles[gi].position[0] - cx_;
+                double ey = particles[gi].position[1] - cy_;
+                if (fabs(ex) < 0.5 && fabs(ey) < 0.5) { free = false; break; }
+            }
+            if (free) { chosen = d; break; }
+        }
+        if (chosen < 0) return;  // all cardinal neighbours occupied; wait
+        tx = px + ddx[chosen];
+        ty = py + ddy[chosen];
     }
 
-    // Place next particle at centre
+    // Place particle at (tx, ty)
     int gi = threadingChain[threadingIdx++];
-    particles[gi].position[0] = icx;
-    particles[gi].position[1] = icy;
+    particles[gi].position[0] = tx;
+    particles[gi].position[1] = ty;
     int newCell = cells.getCell(particles[gi]);
     cells.updateCell(newCell, particles[gi], particles);
     vmmc.syncPosition(gi, &particles[gi].position[0]);
