@@ -574,9 +574,14 @@ static void tryInjectNext(
 
 // ============================================================
 //  tryThreadNext — single-chain threading
-//  First particle is placed at the condensate centre.
-//  Each subsequent particle is placed adjacent (cardinal) to the previous one
-//  so backbone bonds are never broken during injection.
+//
+//  Particle 0 is placed at the condensate centre whenever the centre is free.
+//  Each subsequent particle is placed at the centre only once the previous
+//  ("centre") particle has moved away by exactly 1 unit.  The boundary callback
+//  enforces that the centre particle cannot move more than 1 lattice unit while
+//  it occupies (icx, icy), so the centre is guaranteed free and the backbone
+//  bond (distance = 1) is guaranteed intact the moment the next particle lands.
+//
 //  Starts a new chain from injQueue when threadingChain is empty.
 // ============================================================
 static void tryThreadNext(
@@ -587,7 +592,7 @@ static void tryThreadNext(
     vector<int>& threadingChain, int& threadingIdx,
     queue<vector<int>>& injQueue)
 {
-    // Start a new chain if none is active
+    // Start a new chain if none is active.
     if (threadingChain.empty()) {
         if (injQueue.empty()) return;
         threadingChain = injQueue.front();
@@ -599,48 +604,29 @@ static void tryThreadNext(
         return;
     }
 
-    int tx, ty;  // target lattice position for the new particle
-
     if (threadingIdx == 0) {
-        // First particle: enter at the condensate centre
+        // First particle: wait until the centre lattice site is free.
         for (int gi = 0; gi < nParticles; gi++) {
             if (staged.count(gi)) continue;
             double dx = particles[gi].position[0] - icx;
             double dy = particles[gi].position[1] - icy;
             if (fabs(dx) < 0.5 && fabs(dy) < 0.5) return;  // centre occupied
         }
-        tx = icx; ty = icy;
     } else {
-        // Subsequent particles: place adjacent to the previous particle so the
-        // backbone bond (distance 1) is immediately satisfied.
+        // Subsequent particles: only inject once the previous ("centre") particle
+        // has moved away from (icx, icy).  The boundary callback guarantees it
+        // moved by exactly 1 unit, so the centre is free and the new particle
+        // will be distance-1 from the previous one.
         int prev = threadingChain[threadingIdx - 1];
-        int px = (int)round(particles[prev].position[0]);
-        int py = (int)round(particles[prev].position[1]);
-
-        const int ddx[4] = { 1, -1,  0,  0 };
-        const int ddy[4] = { 0,  0,  1, -1 };
-        int chosen = -1;
-        for (int d = 0; d < 4; d++) {
-            int cx_ = px + ddx[d];
-            int cy_ = py + ddy[d];
-            bool free = true;
-            for (int gi = 0; gi < nParticles; gi++) {
-                if (staged.count(gi)) continue;
-                double ex = particles[gi].position[0] - cx_;
-                double ey = particles[gi].position[1] - cy_;
-                if (fabs(ex) < 0.5 && fabs(ey) < 0.5) { free = false; break; }
-            }
-            if (free) { chosen = d; break; }
-        }
-        if (chosen < 0) return;  // all cardinal neighbours occupied; wait
-        tx = px + ddx[chosen];
-        ty = py + ddy[chosen];
+        double dx = particles[prev].position[0] - icx;
+        double dy = particles[prev].position[1] - icy;
+        if (fabs(dx) < 0.5 && fabs(dy) < 0.5) return;  // still at centre; wait
     }
 
-    // Place particle at (tx, ty)
+    // Place the next particle at the centre.
     int gi = threadingChain[threadingIdx++];
-    particles[gi].position[0] = tx;
-    particles[gi].position[1] = ty;
+    particles[gi].position[0] = icx;
+    particles[gi].position[1] = icy;
     int newCell = cells.getCell(particles[gi]);
     cells.updateCell(newCell, particles[gi], particles);
     vmmc.syncPosition(gi, &particles[gi].position[0]);
@@ -897,11 +883,33 @@ int main(int argc, char** argv)
 
     // Hard wall: centre lattice point (d²<0.5) is always forbidden.
     // Staged particles are frozen.
+    // Centre-particle constraint (single-chain only): while the most recently
+    // injected threading particle sits at (icx,icy), any proposed move that
+    // would carry it more than 1 lattice unit from the centre is rejected.
+    // This guarantees the centre vacates by exactly 1 unit, keeping it free
+    // for the next particle and preserving the backbone bond (distance = 1).
     callbacks.boundaryCallback =
-        [cx, cy, &staged](unsigned int pid, const double* pos, const double*) -> bool {
+        [cx, cy, icx, icy, singleChain,
+         &staged, &threadingChain, &threadingIdx, &particles]
+        (unsigned int pid, const double* pos, const double*) -> bool {
+            // Hard wall at the centre.
             double dx = pos[0] - cx, dy = pos[1] - cy;
             if (dx*dx + dy*dy < 0.5) return true;
+            // Staged particles are frozen.
             if (staged.count((int)pid)) return true;
+            // Centre-particle movement constraint.
+            if (singleChain && !threadingChain.empty() && threadingIdx > 0) {
+                int centerPid = threadingChain[threadingIdx - 1];
+                if ((int)pid == centerPid) {
+                    double curX = particles[centerPid].position[0];
+                    double curY = particles[centerPid].position[1];
+                    // Only constrain while the particle is AT the centre.
+                    if (fabs(curX - icx) < 0.5 && fabs(curY - icy) < 0.5) {
+                        double ndx = pos[0] - icx, ndy = pos[1] - icy;
+                        if (ndx*ndx + ndy*ndy > 1.0 + 1e-6) return true;  // reject
+                    }
+                }
+            }
             return false;
         };
 
