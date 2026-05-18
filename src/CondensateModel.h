@@ -41,6 +41,7 @@ public:
     CouplingMode coupling;  //!< Coupling mode (product or midpoint).
     double gamma0;          //!< Minimum coupling at r=0 (default 0). γ(r)=γ0+(1-γ0)·r/R_c.
     int    phaseGOverride;  //!< -1=normal, 0=equil (g=1 everywhere), 1=denat (g=0 everywhere).
+    bool   singleChain = false;  //!< When true, disables same-chain suppression.
 
     //! Constructor.
     CondensateModel(Box&, std::vector<Particle>&, CellList&,
@@ -74,13 +75,16 @@ public:
     double computeEnergy(unsigned int, const double*, const double*);
 
     //! System energy excluding particles currently in the injection zone.
-    //! Use this for plots and statistics; the VMMC uses the full energy.
     double getEnergyExcludingCore();
 
     //! Full system pair-energy sum with no exclusions.
-    //! Use this for all energy reporting; avoids discontinuous jumps when
-    //! particles cross the injection-zone exclusion boundary.
     double getSystemEnergy();
+
+    //! System energy summing only pair contributions with |e| < 500.
+    //! This excludes backbone bonds (~1000) so the reported energy tracks only
+    //! patch/coupling contacts and is free of discontinuous jumps when backbone
+    //! bonds enter or leave the interaction range during threading.
+    double getEnergyExcludingBackbone();
 };
 
 #endif /* _CONDENSATE_MODEL_H */

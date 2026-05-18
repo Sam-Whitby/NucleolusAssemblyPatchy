@@ -126,7 +126,8 @@ double CondensateModel::computePairEnergy(
     // Segments within one chain interact only via backbone bonds; all other
     // weak coupling between them is suppressed to avoid spurious intra-chain
     // repulsion that would make the native structure non-minimal.
-    bool sameChain = ((int)particle1 / n0 == (int)particle2 / n0) &&
+    bool sameChain = !singleChain &&
+                     ((int)particle1 / n0 == (int)particle2 / n0) &&
                      (id1 / 4 == id2 / 4);
 
     // Gradient coupling factor for all weak terms.
@@ -264,5 +265,26 @@ double CondensateModel::getEnergyExcludingCore()
                                         &particles[nbr].orientation[0]);
         }
     }
-    return energy * 0.5;  // each pair counted once
+    return energy * 0.5;
+}
+
+double CondensateModel::getEnergyExcludingBackbone()
+{
+    double energy = 0.0;
+    int np = (int)particles.size();
+    for (int i = 0; i < np; i++) {
+        unsigned int nbrs[maxInteractions];
+        unsigned int n = computeInteractions(i, &particles[i].position[0],
+                                             &particles[i].orientation[0], nbrs);
+        for (unsigned int k = 0; k < n; k++) {
+            unsigned int nbr = nbrs[k];
+            if ((int)nbr <= i) continue;  // count each pair once
+            double e = computePairEnergy(i, &particles[i].position[0],
+                                         &particles[i].orientation[0],
+                                         nbr, &particles[nbr].position[0],
+                                         &particles[nbr].orientation[0]);
+            if (std::fabs(e) < 500.0) energy += e;
+        }
+    }
+    return energy;
 }

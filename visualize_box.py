@@ -286,7 +286,8 @@ def main():
 
     if single_mode:
         ax_anim.legend(
-            handles=[mpatches.Patch(color=_POLY_COLORS[0], label='Single chain')],
+            handles=[mpatches.Patch(color=_POLY_COLORS[c % 4], label=f'Copy {c}')
+                     for c in range(min(nCopies, 4))],
             loc='upper right', fontsize=7, framealpha=0.7,
         )
     else:
@@ -373,7 +374,7 @@ def main():
         xs     = [p[2] for p in pts]
         ys     = [p[3] for p in pts]
         if single_mode:
-            colors = [_POLY_COLORS[0]] * len(pts)
+            colors = [_POLY_COLORS[p[4] % 4] for p in pts]  # p[4] = copy index
         else:
             colors = [_POLY_COLORS[p[1] % 4] for p in pts]
 

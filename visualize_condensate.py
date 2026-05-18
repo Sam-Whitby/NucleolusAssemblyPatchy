@@ -90,8 +90,12 @@ def parse_traj(path):
         phase            = _kv(hdr, 'phase', 'main')
         ref_e_s          = _kv(hdr, 'refEnergy',  None)
         n_asm_s          = _kv(hdr, 'nAssembled', None)
+        single_s         = _kv(hdr, 'single', '0')
+        n0_s             = _kv(hdr, 'n0',     None)
         refEnergy        = float(ref_e_s) if ref_e_s is not None else None
         nAssembled       = int(n_asm_s)   if n_asm_s is not None else None
+        single           = int(single_s)  if single_s is not None else 0
+        n0_hdr           = int(n0_s)      if n0_s    is not None else None
 
         particles = []
         for _ in range(n):
@@ -119,6 +123,7 @@ def parse_traj(path):
                 coupling=coupling, gamma0=gamma0,
                 phase=phase, particles=particles,
                 refEnergy=refEnergy, nAssembled=nAssembled,
+                single=single, n0=n0_hdr if n0_hdr is not None else n // max(nCopies, 1),
             ))
 
     return frames
@@ -143,10 +148,12 @@ def main():
     frames = all_frames[::args.skip]
     print(f"  {len(all_frames)} total frames, rendering {len(frames)}.", flush=True)
 
-    R_c    = args.radius if args.radius else frames[0]['R_c']
-    cx     = frames[0]['cx']
-    cy     = frames[0]['cy']
-    gamma0 = frames[0]['gamma0']
+    R_c         = args.radius if args.radius else frames[0]['R_c']
+    cx          = frames[0]['cx']
+    cy          = frames[0]['cy']
+    gamma0      = frames[0]['gamma0']
+    single_mode = bool(frames[0].get('single', 0))
+    n0          = frames[0].get('n0') or (len(frames[0]['particles']) // max(frames[0]['nCopies'], 1))
 
     ts_steps   = [f['step']             for f in all_frames]
     ts_energy  = [f['energy']           for f in all_frames]
@@ -234,10 +241,16 @@ def main():
 
     ax_anim.plot(0, 0, 'x', color='red', ms=5, zorder=4)
 
-    legend_patches = [
-        mpatches.Patch(color=_POLY_COLORS[t], label=f"Polymer type {t}")
-        for t in range(4)
-    ]
+    if single_mode:
+        legend_patches = [
+            mpatches.Patch(color=_POLY_COLORS[c % 4], label=f'Copy {c}')
+            for c in range(min(nCopies_f, 4))
+        ]
+    else:
+        legend_patches = [
+            mpatches.Patch(color=_POLY_COLORS[t], label=f"Polymer type {t}")
+            for t in range(4)
+        ]
     ax_anim.legend(handles=legend_patches, loc='upper right', fontsize=7, framealpha=0.7)
 
     scat = ax_anim.scatter([], [], s=140, zorder=5,
@@ -298,9 +311,12 @@ def main():
         rcx = fr['cx']
         rcy = fr['cy']
 
-        xs     = [p[2] - rcx for p in pts]
-        ys     = [p[3] - rcy for p in pts]
-        colors = [_POLY_COLORS[p[1] % 4] for p in pts]
+        xs = [p[2] - rcx for p in pts]
+        ys = [p[3] - rcy for p in pts]
+        if single_mode:
+            colors = [_POLY_COLORS[p[4] % 4] for p in pts]  # per-copy colour
+        else:
+            colors = [_POLY_COLORS[p[1] % 4] for p in pts]
 
         scat.set_offsets(np.column_stack([xs, ys]))
         scat.set_color(colors)
@@ -309,8 +325,14 @@ def main():
             ln.remove()
         bond_lines = []
         by_id = {p[0]: p for p in pts}
+        # single-chain: n0 beads per copy → skip bond only at last bead of copy.
+        # multi-chain:  n0/4 beads per segment → skip at last bead of segment.
+        seg_len = n0 if single_mode else max(n0 // 4, 1)
         for p in pts:
             pid, _, px, py, copy_ = p
+            lid = pid % n0
+            if lid % seg_len == seg_len - 1:
+                continue  # end of this chain/segment; no bond beyond
             nxt = by_id.get(pid + 1)
             if nxt and nxt[4] == copy_:
                 dist2 = (nxt[2] - px)**2 + (nxt[3] - py)**2

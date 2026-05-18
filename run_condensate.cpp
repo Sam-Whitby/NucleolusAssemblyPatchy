@@ -1,47 +1,41 @@
 /*
   run_condensate.cpp
 
-  Circular condensate assembly simulation — Chapter 2 extension.
+  Circular condensate assembly simulation.
 
-  Models the assembly of nCopies copies of a 16-particle (n=2 Moore-curve)
-  target complex T inside a 2D circular condensate of radius R_c.
+  Models assembly of nCopies copies of a Moore-curve target complex inside a
+  2D circular condensate of radius R_c.
 
   Three simulation phases (all measured in outer iterations):
     --t-equil N   Equilibration: g=1 everywhere; complexes are stable.
     --t-denat N   Denaturation: g=0 everywhere; complexes fall apart.
     --steps   N   Main run: radial gradient γ(r)=γ0+(1-γ0)·r/R_c.
 
-  The system starts with nCopies fully assembled target complexes placed in a
-  grid near the condensate centre, spaced 3 lattice units apart so they do not
-  interact.
-
-  Exit tracking (counters written to stats and trajectory files):
-    exitedParticles   — cumulative particles that left (any component size)
-    exitedPerfect     — cumulative perfectly assembled complexes that exited
-                        (all N0 distinct local types present, energy = E_ref)
-    exitedFull        — cumulative N0-particle components with all distinct
-                        types, regardless of assembly energy (diagnostic)
-    exitQuality       — fraction of exiting mass in perfect complexes:
-                        (exitedPerfect × N0) / exitedParticles  ∈ [0, 1]
-                        1 = all exited mass is perfect complexes
-                        0 = nothing exiting is a perfect complex
+  Recycling (multi-chain):  exited polymer groups are placed on the 4 cardinal
+    ring sites around the condensate centre.
+  Recycling (single-chain): exited chains are threaded one particle at a time
+    through the condensate centre.  The centre lattice point has a hard wall;
+    no ring repulsion.  Energy is reported excluding backbone bonds (|e|<500)
+    to avoid jumps as backbone bonds enter/leave interaction range.
 
   Options
-    --steps     N        main-phase outer iterations                    [10000]
-    --snapshots N        total snapshots across all phases              [1000]
-    --t-equil   N        equilibration iterations                       [0]
-    --t-denat   N        denaturation iterations                        [0]
-    --copies    N        number of target complex copies                [4]
-    --radius    R        condensate radius in lattice units             [60]
-    --gamma0    γ        minimum coupling at r=0 (gradient floor)      [0.0]
-    --gradient           enable radial gradient (default: g=1 everywhere)
-    --stokes             enable Stokes hydrodynamic drag (D ∝ 1/R)
-    --coupling  MODE     gradient coupling: product or midpoint         [product]
-    --phi-rot      φ     fraction of cluster rotation moves             [0.2]
-    --phi-reorient φ     fraction of in-place reorientation moves       [0.2]
-    --output    PREFIX   prefix for output files                        [condensate]
-    --seed      S        RNG seed (0 = time-based)                     [1]
-    --J         J        weak patch coupling strength (gradient-scaled) [8.0]
+    --steps       N        main-phase outer iterations                    [10000]
+    --snapshots   N        total snapshots across all phases              [1000]
+    --t-equil     N        equilibration iterations                       [0]
+    --t-denat     N        denaturation iterations                        [0]
+    --copies      N        number of target complex copies                [4]
+    --radius      R        condensate radius in lattice units             [60]
+    --gamma0      γ        minimum coupling at r=0 (gradient floor)      [0.0]
+    --gradient             enable radial gradient (default: g=1 everywhere)
+    --stokes               enable Stokes hydrodynamic drag (D ∝ 1/R)
+    --coupling    MODE     gradient coupling: product or midpoint         [product]
+    --phi-rot     φ        fraction of cluster rotation moves             [0.2]
+    --phi-reorient φ       fraction of in-place reorientation moves       [0.2]
+    --output      PREFIX   prefix for output files                        [condensate]
+    --seed        S        RNG seed (0 = time-based)                     [1]
+    --J           J        weak patch coupling strength (gradient-scaled) [8.0]
+    --single               build a single self-folding Moore-curve chain
+    --Moore-N     N        Moore curve order (4^N particles, N>=1)        [2]
 */
 
 #include <cmath>
@@ -75,32 +69,14 @@ extern double INF;
 extern double TOL;
 
 // ============================================================
-//  Target complex T  (n=2 Moore curve, offset-by-1 partition)
-//
-//  Each polymer traces an L-shaped arm of the 4×4 grid.
-//  Partition (1-indexed labels, y increasing upward):
-//
-//    y=3:  1  1  1  2
-//    y=2:  1  3  2  2
-//    y=1:  3  3  2  4
-//    y=0:  3  4  4  4
-//
-//  Polymer 0 (local ids 0-3):   (0,2)(0,3)(1,3)(2,3)
-//  Polymer 1 (local ids 4-7):   (3,3)(3,2)(2,2)(2,1)
-//  Polymer 2 (local ids 8-11):  (0,0)(0,1)(1,1)(1,2)
-//  Polymer 3 (local ids 12-15): (3,1)(3,0)(2,0)(1,0)
-//
-//  All backbone bonds are at distance 1 (cardinal).
-//  Seg0 and Seg3 of every polymer are at distance sqrt(5):
-//  no intra-chain same-type repulsion in the native structure.
+//  Multi-chain target (n=2 Moore curve, 4 polymers × 4 segments)
 // ============================================================
+static const int N0_MULTI   = 16;
+static const int N_POLYMER  = 4;
+static const int N_SEG      = 4;
 
-static const int N0        = 16;
-static const int N_POLYMER = 4;
-static const int N_SEG     = 4;
-
-static const int TARGET_X[N0] = { 0,0,1,2,  3,3,2,2,  0,0,1,1,  3,3,2,1 };
-static const int TARGET_Y[N0] = { 2,3,3,3,  3,2,2,1,  0,1,1,2,  1,0,0,0 };
+static const int TARGET_X_MULTI[N0_MULTI] = { 0,0,1,2,  3,3,2,2,  0,0,1,1,  3,3,2,1 };
+static const int TARGET_Y_MULTI[N0_MULTI] = { 2,3,3,3,  3,2,2,1,  0,1,1,2,  1,0,0,0 };
 
 static const int BACKBONE_PAIRS[][2] = {
     {0,1},{1,2},{2,3},
@@ -112,180 +88,224 @@ static const int N_BB_PAIRS = 12;
 
 inline int polyType(int id) { return id / N_SEG; }
 
-inline double targetDistSqd(int id1, int id2) {
-    double dx = TARGET_X[id1] - TARGET_X[id2];
-    double dy = TARGET_Y[id1] - TARGET_Y[id2];
+inline double targetDistSqd_multi(int id1, int id2) {
+    double dx = TARGET_X_MULTI[id1] - TARGET_X_MULTI[id2];
+    double dy = TARGET_Y_MULTI[id1] - TARGET_Y_MULTI[id2];
     return dx*dx + dy*dy;
 }
 
-
 // ============================================================
-//  Reference energy of one perfectly assembled target complex (g = 1).
-//
-//  Patchy model contributions:
-//   - N_BB_PAIRS backbone bonds at d=1:  -bbEnergy each
-//     (same-type weakD1 is now 0, so backbone = -bbEnergy exactly)
-//   - 12 cross-polymer d=1 native contacts: -J each (patch-gated)
-//   - d=√2 cross-type contacts removed from model
-//   - crosstalk = 0, same-type repulsions removed → 0
+//  Moore curve L-system generator (same as run_box.cpp)
 // ============================================================
-static double referenceComplexEnergy(double J, double bbEnergy)
+static vector<pair<int,int>> generateMooreCurve(int N)
 {
-    // 12 backbone bonds at -bbEnergy each (no same-type weakD1 correction)
-    double E = (double)N_BB_PAIRS * -bbEnergy;
-    // 12 cross-type d=1 native contacts at -J each
-    for (int i = 0; i < N0; i++) {
-        for (int j = i+1; j < N0; j++) {
-            if (polyType(i) == polyType(j)) continue;
-            double dsqd = targetDistSqd(i, j);
-            if (dsqd < 1.0 + 1e-6) E -= J;
-            // d=sqrt(2) contacts removed from patchy model
-        }
-    }
-    return E;
-}
-
-// Sum all pairwise energies within a component (each unordered pair counted once).
-static double componentPairEnergy(CondensateModel& model,
-                                   const vector<int>& comp,
-                                   const vector<Particle>& particles)
-{
-    double E = 0.0;
-    for (int ii = 0; ii < (int)comp.size(); ii++) {
-        for (int jj = ii+1; jj < (int)comp.size(); jj++) {
-            int i = comp[ii], j = comp[jj];
-            double e = model.computePairEnergy(
-                i, &particles[i].position[0], &particles[i].orientation[0],
-                j, &particles[j].position[0], &particles[j].orientation[0]);
-            if (e < 1e5) E += e;
-        }
-    }
-    return E;
-}
-
-// ============================================================
-//  Count copies whose intra-copy pairwise energy equals refComplexEnergy
-//  within tolerance 0.5.
-// ============================================================
-static int countAssembled(CondensateModel& model, const vector<Particle>& particles,
-                           int nCopies, double refComplexEnergy)
-{
-    int n = 0;
-    for (int c = 0; c < nCopies; c++) {
-        int base = c * N0;
-        double E = 0.0;
-        for (int i = base; i < base + N0; i++) {
-            for (int j = i+1; j < base + N0; j++) {
-                double e = model.computePairEnergy(
-                    i, &particles[i].position[0], &particles[i].orientation[0],
-                    j, &particles[j].position[0], &particles[j].orientation[0]);
-                if (e < 1e5) E += e;
+    string s = "LFL+F+LFL";
+    for (int iter = 0; iter < N - 1; iter++) {
+        string t;
+        t.reserve(s.size() * 6);
+        for (char c : s) {
+            switch (c) {
+                case 'L': t += "-RF+LFL+FR-"; break;
+                case 'R': t += "+LF-RFR-FL+"; break;
+                default:  t += c;             break;
             }
         }
-        if (fabs(E - refComplexEnergy) < 0.5) n++;
+        s = std::move(t);
     }
-    return n;
+    int x = 0, y = 0, dx = 1, dy = 0;
+    vector<pair<int,int>> path;
+    path.reserve(1 << (2 * N));
+    path.push_back({x, y});
+    for (char c : s) {
+        if (c == 'F') {
+            x += dx; y += dy;
+            path.push_back({x, y});
+        } else if (c == '+') {
+            int tmp = dx; dx = -dy; dy = tmp;
+        } else if (c == '-') {
+            int tmp = dx; dx = dy; dy = -tmp;
+        }
+    }
+    int minX = path[0].first, minY = path[0].second;
+    for (auto& p : path) { minX = min(minX, p.first); minY = min(minY, p.second); }
+    for (auto& p : path) { p.first -= minX; p.second -= minY; }
+    return path;
 }
 
 // ============================================================
-//  Build coupling matrices (patchy model).
-//
-//  Only cross-type d=1 pairs are attractive; all other entries are zero.
-//  Same-type repulsions removed: hard-core excluded volume handles overlap.
-//  d=√2 cross-type contacts removed: not gateable by the patch system and
-//  would create ungated inter-complex attraction between assembled complexes.
+//  Multi-chain build functions (unchanged from before)
 // ============================================================
-static void buildCouplingMatrices(
+static void buildCouplingMatrices_multi(
     double J,
     vector<vector<double>>& wD1,
     vector<vector<double>>& wDsq2,
     vector<vector<double>>& wD2,
     vector<vector<double>>& wDsq5)
 {
-    wD1.assign(N0, vector<double>(N0, 0.0));
-    wDsq2.assign(N0, vector<double>(N0, 0.0));
-    wD2.assign(N0, vector<double>(N0, 0.0));
-    wDsq5.assign(N0, vector<double>(N0, 0.0));
-
-    for (int i = 0; i < N0; i++) {
-        for (int j = 0; j < N0; j++) {
-            if (i == j) continue;
-            if (polyType(i) == polyType(j)) continue;  // same-type: no interaction
-            double dsqd = targetDistSqd(i, j);
-            if (dsqd < 1.0 + TOL)
-                wD1[i][j] = J;  // attractive at d=1, gated by patch alignment
-            // d=sqrt(2) cross-type contacts intentionally omitted
+    wD1.assign(N0_MULTI, vector<double>(N0_MULTI, 0.0));
+    wDsq2.assign(N0_MULTI, vector<double>(N0_MULTI, 0.0));
+    wD2.assign(N0_MULTI, vector<double>(N0_MULTI, 0.0));
+    wDsq5.assign(N0_MULTI, vector<double>(N0_MULTI, 0.0));
+    for (int i = 0; i < N0_MULTI; i++)
+        for (int j = 0; j < N0_MULTI; j++) {
+            if (i == j || polyType(i) == polyType(j)) continue;
+            if (targetDistSqd_multi(i, j) < 1.0 + TOL)
+                wD1[i][j] = J;
         }
-    }
 }
 
-// ============================================================
-//  Build patch slot map for all 16 particle identities.
-//
-//  For each particle i, activate a patch on the face pointing toward each
-//  cross-type native d=1 contact partner j in TARGET.
-//  All particles start at orientation (1,0), so local frame = world frame:
-//    slot 0 = world-east (+x), 1 = world-north (+y),
-//    2 = world-west (-x),      3 = world-south (-y).
-// ============================================================
-static vector<array<bool,4>> buildPatchSlots()
+static vector<array<bool,4>> buildPatchSlots_multi()
 {
-    vector<array<bool,4>> slots(N0);
+    vector<array<bool,4>> slots(N0_MULTI);
     for (auto& s : slots) s.fill(false);
-
-    for (int i = 0; i < N0; i++) {
-        for (int j = 0; j < N0; j++) {
-            if (i == j) continue;
-            if (polyType(i) == polyType(j)) continue;
-            double dsqd = targetDistSqd(i, j);
-            if (dsqd > 1.0 + 1e-6) continue;
-            int dx = TARGET_X[j] - TARGET_X[i];
-            int dy = TARGET_Y[j] - TARGET_Y[i];
+    for (int i = 0; i < N0_MULTI; i++)
+        for (int j = 0; j < N0_MULTI; j++) {
+            if (i == j || polyType(i) == polyType(j)) continue;
+            if (targetDistSqd_multi(i, j) > 1.0 + 1e-6) continue;
+            int dx = TARGET_X_MULTI[j] - TARGET_X_MULTI[i];
+            int dy = TARGET_Y_MULTI[j] - TARGET_Y_MULTI[i];
             int slot = -1;
-            if      (dx ==  1 && dy ==  0) slot = 0;  // east
-            else if (dx ==  0 && dy ==  1) slot = 1;  // north
-            else if (dx == -1 && dy ==  0) slot = 2;  // west
-            else if (dx ==  0 && dy == -1) slot = 3;  // south
+            if      (dx ==  1 && dy ==  0) slot = 0;
+            else if (dx ==  0 && dy ==  1) slot = 1;
+            else if (dx == -1 && dy ==  0) slot = 2;
+            else if (dx ==  0 && dy == -1) slot = 3;
             if (slot >= 0) slots[i][slot] = true;
         }
-    }
     return slots;
 }
 
-// ============================================================
-//  Build backbone Triples for all nCopies copies
-// ============================================================
-static void buildBackboneTriples(int nCopies, double bbEnergy,
-                                  vector<Triple>& north, vector<Triple>& east)
+static void buildBackboneTriples_multi(int nCopies, double bbEnergy,
+                                        vector<Triple>& north, vector<Triple>& east)
 {
-    north.clear();
-    east.clear();
+    north.clear(); east.clear();
     for (int c = 0; c < nCopies; c++) {
-        int base = c * N0;
+        int base = c * N0_MULTI;
         for (int k = 0; k < N_BB_PAIRS; k++) {
             int gi = base + BACKBONE_PAIRS[k][0];
             int gj = base + BACKBONE_PAIRS[k][1];
-            east.push_back({gi, gj, bbEnergy});
-            east.push_back({gj, gi, bbEnergy});
-            north.push_back({gi, gj, bbEnergy});
-            north.push_back({gj, gi, bbEnergy});
+            east.push_back({gi, gj, bbEnergy}); east.push_back({gj, gi, bbEnergy});
+            north.push_back({gi, gj, bbEnergy}); north.push_back({gj, gi, bbEnergy});
         }
     }
 }
 
+static double referenceComplexEnergy_multi(double J, double bbEnergy)
+{
+    double E = N_BB_PAIRS * -bbEnergy;
+    for (int i = 0; i < N0_MULTI; i++)
+        for (int j = i+1; j < N0_MULTI; j++) {
+            if (polyType(i) == polyType(j)) continue;
+            if (targetDistSqd_multi(i, j) < 1.0 + 1e-6) E -= J;
+        }
+    return E;
+}
+
+// Returns energy of one perfect complex counting ONLY patch contacts (no backbone).
+static double referenceComplexEnergyNoBB_multi(double J)
+{
+    double E = 0.0;
+    for (int i = 0; i < N0_MULTI; i++)
+        for (int j = i+1; j < N0_MULTI; j++) {
+            if (polyType(i) == polyType(j)) continue;
+            if (targetDistSqd_multi(i, j) < 1.0 + 1e-6) E -= J;
+        }
+    return E;
+}
+
 // ============================================================
-//  Place all particles as fully assembled target complexes in a
-//  square grid centred at (cx, cy).  Adjacent complexes are offset
-//  by (N_SEG + 3) = 7 lattice units, giving a 3-unit gap so no
-//  inter-complex interactions occur (max interaction range = √5 < 3).
+//  Single-chain build functions (same as run_box.cpp)
 // ============================================================
-static void placeParticlesTargetComplex(vector<Particle>& particles,
-                                         CellList& cells, Box& box,
-                                         int nCopies,
-                                         double cx, double cy)
+static void buildCouplingMatrices_single(
+    int n0, const vector<pair<int,int>>& path, double J,
+    vector<vector<double>>& wD1,
+    vector<vector<double>>& wDsq2,
+    vector<vector<double>>& wD2,
+    vector<vector<double>>& wDsq5)
+{
+    wD1.assign(n0, vector<double>(n0, 0.0));
+    wDsq2.assign(n0, vector<double>(n0, 0.0));
+    wD2.assign(n0, vector<double>(n0, 0.0));
+    wDsq5.assign(n0, vector<double>(n0, 0.0));
+    for (int i = 0; i < n0; i++)
+        for (int j = 0; j < n0; j++) {
+            if (i == j || abs(i - j) == 1) continue;
+            int dx = path[i].first  - path[j].first;
+            int dy = path[i].second - path[j].second;
+            if (dx*dx + dy*dy < 1.0 + 1e-6) wD1[i][j] = J;
+        }
+}
+
+static vector<array<bool,4>> buildPatchSlots_single(
+    int n0, const vector<pair<int,int>>& path)
+{
+    vector<array<bool,4>> slots(n0);
+    for (auto& s : slots) s.fill(false);
+    for (int i = 0; i < n0; i++)
+        for (int j = 0; j < n0; j++) {
+            if (i == j || abs(i - j) == 1) continue;
+            int dx = path[j].first  - path[i].first;
+            int dy = path[j].second - path[i].second;
+            if (dx*dx + dy*dy > 1.0 + 1e-6) continue;
+            int slot = -1;
+            if      (dx ==  1 && dy ==  0) slot = 0;
+            else if (dx ==  0 && dy ==  1) slot = 1;
+            else if (dx == -1 && dy ==  0) slot = 2;
+            else if (dx ==  0 && dy == -1) slot = 3;
+            if (slot >= 0) slots[i][slot] = true;
+        }
+    return slots;
+}
+
+static void buildBackboneTriples_single(int n0, int nCopies, double bbEnergy,
+                                         vector<Triple>& north, vector<Triple>& east)
+{
+    north.clear(); east.clear();
+    for (int c = 0; c < nCopies; c++) {
+        int base = c * n0;
+        for (int k = 0; k < n0 - 1; k++) {
+            int gi = base + k, gj = base + k + 1;
+            east.push_back({gi, gj, bbEnergy}); east.push_back({gj, gi, bbEnergy});
+            north.push_back({gi, gj, bbEnergy}); north.push_back({gj, gi, bbEnergy});
+        }
+    }
+}
+
+static double referenceComplexEnergy_single(
+    int n0, const vector<pair<int,int>>& path, double J, double bbEnergy)
+{
+    double E = (n0 - 1) * -bbEnergy;
+    for (int i = 0; i < n0; i++)
+        for (int j = i + 2; j < n0; j++) {
+            int dx = path[i].first - path[j].first;
+            int dy = path[i].second - path[j].second;
+            if (dx*dx + dy*dy < 1.0 + 1e-6) E -= J;
+        }
+    return E;
+}
+
+static double referenceComplexEnergyNoBB_single(
+    int n0, const vector<pair<int,int>>& path, double J)
+{
+    double E = 0.0;
+    for (int i = 0; i < n0; i++)
+        for (int j = i + 2; j < n0; j++) {
+            int dx = path[i].first - path[j].first;
+            int dy = path[i].second - path[j].second;
+            if (dx*dx + dy*dy < 1.0 + 1e-6) E -= J;
+        }
+    return E;
+}
+
+// ============================================================
+//  Place particles as assembled target complexes at start
+// ============================================================
+static void placeParticlesTargetComplex(
+    vector<Particle>& particles, CellList& cells, Box& box,
+    int nCopies, int n0, const vector<pair<int,int>>& path,
+    int spacing, double cx, double cy)
 {
     cells.reset();
-    int nParticles = nCopies * N0;
+    int nParticles = nCopies * n0;
     for (int i = 0; i < nParticles; i++) {
         particles[i].index = i;
         particles[i].position.resize(2);
@@ -293,23 +313,17 @@ static void placeParticlesTargetComplex(vector<Particle>& particles,
         particles[i].orientation[0] = 1.0;
         particles[i].orientation[1] = 0.0;
     }
-
-    // Grid: nc_grid × nc_grid, each cell 7 units apart.
-    // Total grid span = nc_grid*7 - 3.  Centre the grid at (cx, cy).
     int nc_grid = (int)ceil(sqrt((double)nCopies));
-    double span = nc_grid * 7 - 3;
-    double ox0  = round(cx) - span / 2.0;
-    double oy0  = round(cy) - span / 2.0;
-
+    double ox0 = round(cx) - ((nc_grid - 1) * spacing) / 2.0;
+    double oy0 = round(cy) - ((nc_grid - 1) * spacing) / 2.0;
     for (int c = 0; c < nCopies; c++) {
-        int col = c % nc_grid;
-        int row = c / nc_grid;
-        double ox = ox0 + col * 7;
-        double oy = oy0 + row * 7;
-        for (int lid = 0; lid < N0; lid++) {
-            int gi = c * N0 + lid;
-            particles[gi].position[0] = ox + TARGET_X[lid];
-            particles[gi].position[1] = oy + TARGET_Y[lid];
+        int col = c % nc_grid, row = c / nc_grid;
+        double ox = ox0 + col * spacing;
+        double oy = oy0 + row * spacing;
+        for (int lid = 0; lid < n0; lid++) {
+            int gi = c * n0 + lid;
+            particles[gi].position[0] = ox + path[lid].first;
+            particles[gi].position[1] = oy + path[lid].second;
             box.periodicBoundaries(particles[gi].position);
             particles[gi].cell = cells.getCell(particles[gi]);
             cells.initCell(particles[gi].cell, particles[gi]);
@@ -317,42 +331,70 @@ static void placeParticlesTargetComplex(vector<Particle>& particles,
     }
 }
 
+// ============================================================
+//  componentPairEnergy — sum all intra-component pair energies
+// ============================================================
+static double componentPairEnergy(CondensateModel& model,
+                                   const vector<int>& comp,
+                                   const vector<Particle>& particles)
+{
+    double E = 0.0;
+    for (int ii = 0; ii < (int)comp.size(); ii++)
+        for (int jj = ii+1; jj < (int)comp.size(); jj++) {
+            int i = comp[ii], j = comp[jj];
+            double e = model.computePairEnergy(
+                i, &particles[i].position[0], &particles[i].orientation[0],
+                j, &particles[j].position[0], &particles[j].orientation[0]);
+            if (e < 1e5) E += e;
+        }
+    return E;
+}
 
 // ============================================================
-//  Detect exiting isolated components, count exits, move to
-//  staging area, and enqueue for later ring injection.
-//
-//  Fast path: O(N) arithmetic pre-scan finds particles with r > R_c.
-//  If none exist, returns {0,0} immediately (no pair evaluations).
-//  Otherwise, BFS expands only the connected clusters that contain at
-//  least one outside particle; clusters entirely inside R_c are never
-//  visited, saving most of the component-building work.
-//
-//  Any such component that is fully outside R_c and isolated (no
-//  bonded non-staged neighbours outside the component) is "exited".
-//  Its particles are grouped by polymer, moved to stageX0, added to
-//  staged, and pushed onto injQueue.
-//
-//  Returns {particlesExited, perfectComplexesExited, fullComplexesExited}.
-//  fullComplexesExited: N0-particle components with all distinct local ids,
-//    regardless of energy — written to exitedFull for diagnostic use.
-//  exitQuality is computed in the caller as (perfectExited×N0)/totalParticles:
-//    fraction of all exiting mass that is in perfect complexes.
+//  Count copies with intra-copy energy ≈ refComplexEnergy
+// ============================================================
+static int countAssembled(CondensateModel& model, const vector<Particle>& particles,
+                           int nCopies, int n0, double refComplexEnergy)
+{
+    int count = 0;
+    for (int c = 0; c < nCopies; c++) {
+        int base = c * n0;
+        double E = 0.0;
+        for (int i = base; i < base + n0; i++)
+            for (int j = i+1; j < base + n0; j++) {
+                double e = model.computePairEnergy(
+                    i, &particles[i].position[0], &particles[i].orientation[0],
+                    j, &particles[j].position[0], &particles[j].orientation[0]);
+                if (e < 1e5) E += e;
+            }
+        if (fabs(E - refComplexEnergy) < 0.5) count++;
+    }
+    return count;
+}
+
+// ============================================================
+//  handleExitsAndQueue
+//  Detect components fully outside R_c, stage them, enqueue for recycling.
+//  For multi-chain: groups are 4-particle polymers, pushed to injQueue
+//                   for ring placement by tryInjectNext.
+//  For single-chain: the whole chain is one group, pushed to injQueue
+//                    for one-at-a-time centre threading by tryThreadNext.
 // ============================================================
 struct ExitCounts { int particles; int perfect; int fullComplex; };
+
 static ExitCounts handleExitsAndQueue(
     CondensateModel& model,
     vector<Particle>& particles,
-    int nParticles,
+    int nParticles, int n0,
     CellList& cells, Box& box,
     double cx, double cy, double R_c,
     vmmc::VMMC& vmmc,
     queue<vector<int>>& injQueue,
     set<int>& staged,
     int stageX0,
-    double refComplexEnergy)
+    double refComplexEnergy,
+    bool singleChain)
 {
-    // --- Fast pre-scan: collect seeds (non-staged particles outside R_c) ---
     const double Rc2 = R_c * R_c;
     vector<int> outsideSeeds;
     for (int i = 0; i < nParticles; i++) {
@@ -361,29 +403,25 @@ static ExitCounts handleExitsAndQueue(
         double dy = particles[i].position[1] - cy;
         if (dx*dx + dy*dy > Rc2) outsideSeeds.push_back(i);
     }
-    if (outsideSeeds.empty()) return {0, 0};
+    if (outsideSeeds.empty()) return {0, 0, 0};
 
-    // --- Targeted BFS: expand each seed to its full connected cluster ---
-    // Inside-only clusters (no outside particle) are never visited.
     const int maxInt = 30;
     unsigned int nbrs[maxInt];
     vector<int> visited(nParticles, -1);
     vector<vector<int>> components;
 
     for (int seed : outsideSeeds) {
-        if (visited[seed] != -1) continue;  // already found via another seed
+        if (visited[seed] != -1) continue;
         int compIdx = (int)components.size();
         vector<int> comp = {seed};
         visited[seed] = compIdx;
-
         for (int ci = 0; ci < (int)comp.size(); ci++) {
             int j = comp[ci];
             int nn = (int)model.computeInteractions(
                 j, &particles[j].position[0], &particles[j].orientation[0], nbrs);
             for (int k = 0; k < nn; k++) {
                 int nbr = (int)nbrs[k];
-                if (visited[nbr] != -1) continue;
-                if (staged.count(nbr)) continue;
+                if (visited[nbr] != -1 || staged.count(nbr)) continue;
                 double e = model.computePairEnergy(
                     j,   &particles[j].position[0],   &particles[j].orientation[0],
                     nbr, &particles[nbr].position[0], &particles[nbr].orientation[0]);
@@ -396,20 +434,20 @@ static ExitCounts handleExitsAndQueue(
         components.push_back(comp);
     }
 
-    int particlesExited   = 0;
-    int perfectExited     = 0;
-    int fullComplexExited = 0;
+    int particlesExited = 0, perfectExited = 0, fullComplexExited = 0;
     int icy = (int)round(cy);
 
     for (auto& comp : components) {
+        // Must be fully outside R_c
         bool allOut = true;
         for (int gi : comp) {
             double dx = particles[gi].position[0] - cx;
             double dy = particles[gi].position[1] - cy;
-            if (dx*dx + dy*dy <= R_c * R_c) { allOut = false; break; }
+            if (dx*dx + dy*dy <= Rc2) { allOut = false; break; }
         }
         if (!allOut) continue;
 
+        // Must be isolated (no non-staged bonded neighbours outside the component)
         set<int> compSet(comp.begin(), comp.end());
         bool isolated = true;
         for (int gi : comp) {
@@ -417,8 +455,7 @@ static ExitCounts handleExitsAndQueue(
                 gi, &particles[gi].position[0], &particles[gi].orientation[0], nbrs);
             for (int k = 0; k < nn; k++) {
                 int nbr = (int)nbrs[k];
-                if (compSet.count(nbr)) continue;
-                if (staged.count(nbr)) continue;
+                if (compSet.count(nbr) || staged.count(nbr)) continue;
                 double e = model.computePairEnergy(
                     gi,  &particles[gi].position[0],  &particles[gi].orientation[0],
                     nbr, &particles[nbr].position[0], &particles[nbr].orientation[0]);
@@ -430,46 +467,64 @@ static ExitCounts handleExitsAndQueue(
 
         particlesExited += (int)comp.size();
 
-        // A full complex: exactly N0 particles with all N0 distinct local ids.
-        // A perfect complex additionally satisfies the native energy criterion.
-        // Particles at r > R_c have γ(r) clamped to 1.0, so their pair energy
-        // is the same as the reference regardless of phase or γ₀.
-        if ((int)comp.size() == N0) {
+        // Check for full/perfect complex exit
+        if ((int)comp.size() == n0) {
             set<int> localIds;
-            for (int gi : comp) localIds.insert(gi % N0);
-            if ((int)localIds.size() == N0) {
-                fullComplexExited++;    // correct size and composition; may be misassembled
+            for (int gi : comp) localIds.insert(gi % n0);
+            if ((int)localIds.size() == n0) {
+                fullComplexExited++;
                 double E = componentPairEnergy(model, comp, particles);
                 if (fabs(E - refComplexEnergy) < 0.5) perfectExited++;
             }
         }
 
-        // Group by polymer key and stage each polymer group.
-        map<int, vector<int>> groups;
-        for (int gi : comp) {
-            int key = (gi / N0) * N_POLYMER + (gi % N0) / N_SEG;
-            groups[key].push_back(gi);
-        }
+        // Group and stage
+        if (singleChain) {
+            // One group per copy: all n0 particles, sorted by local chain index
+            map<int, vector<int>> groups;
+            for (int gi : comp) groups[gi / n0].push_back(gi);
 
-        for (auto& kv : groups) {
-            int polyKey = kv.first;
-            auto& gids = kv.second;
-            sort(gids.begin(), gids.end(),
-                 [](int a, int b){ return (a % N_SEG) < (b % N_SEG); });
-
-            // Move to staging area: horizontal chain at stageX0, unique y per polymer.
-            int stageY = icy + polyKey * 2;
-            for (int s = 0; s < (int)gids.size(); s++) {
-                int gi = gids[s];
-                particles[gi].position[0] = stageX0 + s;
-                particles[gi].position[1] = stageY;
-                box.periodicBoundaries(particles[gi].position);
-                int newCell = cells.getCell(particles[gi]);
-                cells.updateCell(newCell, particles[gi], particles);
-                vmmc.syncPosition(gi, &particles[gi].position[0]);
-                staged.insert(gi);
+            for (auto& kv : groups) {
+                auto& gids = kv.second;
+                sort(gids.begin(), gids.end(),
+                     [n0](int a, int b){ return (a % n0) < (b % n0); });
+                int stageY = icy + kv.first * (n0 + 2);
+                for (int s = 0; s < (int)gids.size(); s++) {
+                    int gi = gids[s];
+                    particles[gi].position[0] = stageX0 + s;
+                    particles[gi].position[1] = stageY;
+                    box.periodicBoundaries(particles[gi].position);
+                    int newCell = cells.getCell(particles[gi]);
+                    cells.updateCell(newCell, particles[gi], particles);
+                    vmmc.syncPosition(gi, &particles[gi].position[0]);
+                    staged.insert(gi);
+                }
+                injQueue.push(gids);
             }
-            injQueue.push(gids);
+        } else {
+            // Multi-chain: group by polymer (copy × N_POLYMER + polymerWithinCopy)
+            map<int, vector<int>> groups;
+            for (int gi : comp) {
+                int key = (gi / n0) * N_POLYMER + (gi % n0) / N_SEG;
+                groups[key].push_back(gi);
+            }
+            for (auto& kv : groups) {
+                auto& gids = kv.second;
+                sort(gids.begin(), gids.end(),
+                     [](int a, int b){ return (a % N_SEG) < (b % N_SEG); });
+                int stageY = icy + kv.first * 2;
+                for (int s = 0; s < (int)gids.size(); s++) {
+                    int gi = gids[s];
+                    particles[gi].position[0] = stageX0 + s;
+                    particles[gi].position[1] = stageY;
+                    box.periodicBoundaries(particles[gi].position);
+                    int newCell = cells.getCell(particles[gi]);
+                    cells.updateCell(newCell, particles[gi], particles);
+                    vmmc.syncPosition(gi, &particles[gi].position[0]);
+                    staged.insert(gi);
+                }
+                injQueue.push(gids);
+            }
         }
     }
 
@@ -477,52 +532,32 @@ static ExitCounts handleExitsAndQueue(
 }
 
 // ============================================================
-//  If all 4 cardinal ring sites around (cx,cy) are unoccupied
-//  by non-staged particles, place the next queued polymer on
-//  the ring in a random CW or CCW orientation.
-//
-//  Ring order (CW): N=(cx,cy+1), E=(cx+1,cy), S=(cx,cy-1), W=(cx-1,cy).
-//  Segment s of the polymer goes to ring[(start ± s) % 4].
+//  tryInjectNext — multi-chain ring injection (unchanged logic)
+//  Waits for all 4 ring sites to be clear, then places a 4-particle
+//  polymer group at the ring positions CW or CCW.
 // ============================================================
 static void tryInjectNext(
-    vector<Particle>& particles,
-    int nParticles,
-    CellList& cells, Box& box,
-    vmmc::VMMC& vmmc,
+    vector<Particle>& particles, int nParticles,
+    CellList& cells, Box& box, vmmc::VMMC& vmmc,
     double cx, double cy,
     queue<vector<int>>& injQueue,
     set<int>& staged)
 {
     if (injQueue.empty()) return;
-
-    int icx = (int)round(cx);
-    int icy = (int)round(cy);
-
-    // Ring positions CW: N, E, S, W.
-    pair<int,int> ring[4] = {
-        {icx,   icy+1},
-        {icx+1, icy  },
-        {icx,   icy-1},
-        {icx-1, icy  }
-    };
-
-    // All 4 ring positions must be free of non-staged particles.
-    for (int ri = 0; ri < 4; ri++) {
+    int icx = (int)round(cx), icy = (int)round(cy);
+    pair<int,int> ring[4] = {{icx,icy+1},{icx+1,icy},{icx,icy-1},{icx-1,icy}};
+    for (int ri = 0; ri < 4; ri++)
         for (int gi = 0; gi < nParticles; gi++) {
             if (staged.count(gi)) continue;
             double dx = particles[gi].position[0] - ring[ri].first;
             double dy = particles[gi].position[1] - ring[ri].second;
             if (fabs(dx) < 0.5 && fabs(dy) < 0.5) return;
         }
-    }
-
     vector<int>& gids = injQueue.front();
     sort(gids.begin(), gids.end(),
          [](int a, int b){ return (a % N_SEG) < (b % N_SEG); });
-
     int  start = (int)(vmmc.rng() * 4) % 4;
     bool cw    = vmmc.rng() < 0.5;
-
     for (int s = 0; s < (int)gids.size(); s++) {
         int ringIdx = cw ? (start + s) % 4 : (start - s + 4) % 4;
         int gi = gids[s];
@@ -534,19 +569,61 @@ static void tryInjectNext(
         vmmc.syncPosition(gi, &particles[gi].position[0]);
         staged.erase(gi);
     }
-
     injQueue.pop();
 }
 
 // ============================================================
-//  Write one frame to trajectory file.
-//  Header carries: step, energy (excluding core), exited count,
-//                  R_c, cx, cy, nCopies, coupling mode.
-//  Particle rows: id poly_type x y copy ox oy
-//    ox, oy: orientation unit vector (rotates with particle during VMMC moves)
+//  tryThreadNext — single-chain centre threading
+//  One particle per call, placed at the condensate centre.
+//  Starts a new chain from injQueue when threadingChain is empty.
+// ============================================================
+static void tryThreadNext(
+    vector<Particle>& particles, int nParticles,
+    CellList& cells, Box& box, vmmc::VMMC& vmmc,
+    int icx, int icy,
+    set<int>& staged,
+    vector<int>& threadingChain, int& threadingIdx,
+    queue<vector<int>>& injQueue)
+{
+    // Start a new chain if none is active
+    if (threadingChain.empty()) {
+        if (injQueue.empty()) return;
+        threadingChain = injQueue.front();
+        injQueue.pop();
+        threadingIdx = 0;
+    }
+    if (threadingIdx >= (int)threadingChain.size()) {
+        threadingChain.clear();
+        return;
+    }
+
+    // Check centre is free of non-staged particles
+    for (int gi = 0; gi < nParticles; gi++) {
+        if (staged.count(gi)) continue;
+        double dx = particles[gi].position[0] - icx;
+        double dy = particles[gi].position[1] - icy;
+        if (fabs(dx) < 0.5 && fabs(dy) < 0.5) return;
+    }
+
+    // Place next particle at centre
+    int gi = threadingChain[threadingIdx++];
+    particles[gi].position[0] = icx;
+    particles[gi].position[1] = icy;
+    int newCell = cells.getCell(particles[gi]);
+    cells.updateCell(newCell, particles[gi], particles);
+    vmmc.syncPosition(gi, &particles[gi].position[0]);
+    staged.erase(gi);
+
+    if (threadingIdx >= (int)threadingChain.size())
+        threadingChain.clear();
+}
+
+// ============================================================
+//  writeFrame
 // ============================================================
 static void writeFrame(FILE* fp, const vector<Particle>& particles,
-                        int nCopies, double R_c, double cx, double cy,
+                        int nCopies, int n0, bool singleMode,
+                        double R_c, double cx, double cy,
                         long long step, double energy,
                         long long exitedParticles, long long exitedPerfect,
                         long long exitedFull, double exitQuality,
@@ -559,15 +636,15 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
         "step=%lld energy=%.6f exitedParticles=%lld exitedPerfect=%lld"
         " exitedFull=%lld exitQuality=%.4f"
         " R_c=%.1f cx=%.1f cy=%.1f nCopies=%d coupling=%s gamma0=%.4f phase=%s"
-        " refEnergy=%.4f nAssembled=%d\n",
+        " refEnergy=%.4f nAssembled=%d single=%d n0=%d\n",
         step, energy, exitedParticles, exitedPerfect,
         exitedFull, exitQuality,
         R_c, cx, cy, nCopies, couplingLabel.c_str(), gamma0, phase.c_str(),
-        refEnergy, nAssembled);
+        refEnergy, nAssembled, (int)singleMode, n0);
     for (int i = 0; i < nParticles; i++) {
-        int copy  = i / N0;
-        int lid   = i % N0;
-        int ptype = polyType(lid);
+        int copy  = i / n0;
+        int lid   = i % n0;
+        int ptype = singleMode ? 0 : polyType(lid);
         fprintf(fp, "%d %d %.4f %.4f %d %.4f %.4f\n",
                 i, ptype,
                 particles[i].position[0],
@@ -583,7 +660,6 @@ static void writeFrame(FILE* fp, const vector<Particle>& particles,
 // ============================================================
 int main(int argc, char** argv)
 {
-    // --- Defaults ---
     long long nsteps      = 10000;
     long long nsnaps      = 1000;
     long long t_equil     = 0;
@@ -599,68 +675,96 @@ int main(int argc, char** argv)
     string    outPrefix   = "condensate";
     unsigned int seed     = 1;
     double    J           = 8.0;
+    bool      singleChain = false;
+    int       mooreN      = 2;
 
     for (int i = 1; i < argc; i++) {
-        if      (!strcmp(argv[i],"--steps")    && i+1<argc) { nsteps    = atoll(argv[++i]); }
-        else if (!strcmp(argv[i],"--snapshots")&& i+1<argc) { nsnaps    = atoll(argv[++i]); }
-        else if (!strcmp(argv[i],"--t-equil")  && i+1<argc) { t_equil   = atoll(argv[++i]); }
-        else if (!strcmp(argv[i],"--t-denat")  && i+1<argc) { t_denat   = atoll(argv[++i]); }
-        else if (!strcmp(argv[i],"--copies")   && i+1<argc) { nCopies   = atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--radius")   && i+1<argc) { R_c       = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--gamma0")   && i+1<argc) { gamma0    = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--gradient"))              { useGradient = true; }
-        else if (!strcmp(argv[i],"--stokes"))                { useStokes   = true; }
-        else if (!strcmp(argv[i],"--coupling") && i+1<argc) { couplingStr = argv[++i]; }
-        else if (!strcmp(argv[i],"--phi-rot")     && i+1<argc) { phi_rot     = atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--phi-reorient")&&i+1<argc) { phi_reorient= atof(argv[++i]); }
-        else if (!strcmp(argv[i],"--output")      && i+1<argc) { outPrefix  = argv[++i]; }
-        else if (!strcmp(argv[i],"--seed")     && i+1<argc) { seed = (unsigned int)atoi(argv[++i]); }
-        else if (!strcmp(argv[i],"--J")        && i+1<argc) { J         = atof(argv[++i]); }
-        else {
-            cerr << "Unknown argument: " << argv[i] << "\n";
-        }
+        if      (!strcmp(argv[i],"--steps")      && i+1<argc) { nsteps    = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--snapshots")  && i+1<argc) { nsnaps    = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--t-equil")    && i+1<argc) { t_equil   = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--t-denat")    && i+1<argc) { t_denat   = atoll(argv[++i]); }
+        else if (!strcmp(argv[i],"--copies")     && i+1<argc) { nCopies   = atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--radius")     && i+1<argc) { R_c       = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--gamma0")     && i+1<argc) { gamma0    = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--gradient"))               { useGradient = true; }
+        else if (!strcmp(argv[i],"--stokes"))                 { useStokes   = true; }
+        else if (!strcmp(argv[i],"--coupling")   && i+1<argc) { couplingStr = argv[++i]; }
+        else if (!strcmp(argv[i],"--phi-rot")      && i+1<argc) { phi_rot     = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--phi-reorient") && i+1<argc) { phi_reorient= atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--output")     && i+1<argc) { outPrefix  = argv[++i]; }
+        else if (!strcmp(argv[i],"--seed")       && i+1<argc) { seed = (unsigned int)atoi(argv[++i]); }
+        else if (!strcmp(argv[i],"--J")          && i+1<argc) { J         = atof(argv[++i]); }
+        else if (!strcmp(argv[i],"--single"))                 { singleChain = true; }
+        else if (!strcmp(argv[i],"--Moore-N")    && i+1<argc) { mooreN    = atoi(argv[++i]); }
+        else { cerr << "Unknown argument: " << argv[i] << "\n"; }
     }
+    if (mooreN < 1) { cerr << "--Moore-N must be >= 1\n"; return 1; }
 
     CouplingMode couplingMode = CouplingMode::Product;
     if (couplingStr == "midpoint") couplingMode = CouplingMode::Midpoint;
     else if (couplingStr != "product") {
-        cerr << "[WARNING] Unknown --coupling '" << couplingStr
-             << "'; defaulting to 'product'.\n";
+        cerr << "[WARNING] Unknown --coupling '" << couplingStr << "'; defaulting to product.\n";
         couplingStr = "product";
     }
 
-    // Distribute snapshots proportionally across the three phases.
-    long long totalSteps  = t_equil + t_denat + nsteps;
-    long long snaps_equil = (totalSteps > 0 && t_equil > 0)
-                            ? max(1LL, nsnaps * t_equil / totalSteps) : 0;
-    long long snaps_denat = (totalSteps > 0 && t_denat > 0)
-                            ? max(1LL, nsnaps * t_denat / totalSteps) : 0;
-    long long snaps_main  = nsnaps - snaps_equil - snaps_denat;
-    if (snaps_main < 1) snaps_main = 1;
+    // ============================================================
+    //  Compute n0 and path
+    // ============================================================
+    int n0;
+    vector<pair<int,int>> path;
+    if (singleChain) {
+        path = generateMooreCurve(mooreN);
+        n0   = (int)path.size();
+        int expected = 1 << (2 * mooreN);
+        if (n0 != expected) {
+            cerr << "Moore curve error: got " << n0 << " points, expected " << expected << "\n";
+            return 1;
+        }
+    } else {
+        n0 = N0_MULTI;
+        for (int i = 0; i < N0_MULTI; i++)
+            path.push_back({TARGET_X_MULTI[i], TARGET_Y_MULTI[i]});
+        if (mooreN != 2)
+            cerr << "Warning: --Moore-N ignored in multi-chain mode.\n";
+    }
 
-    auto saveEvery = [](long long steps, long long snaps) -> long long {
-        if (steps <= 0 || snaps <= 0) return steps;
-        return max(1LL, steps / snaps);
-    };
-    long long saveEvery_equil = saveEvery(t_equil, snaps_equil);
-    long long saveEvery_denat = saveEvery(t_denat, snaps_denat);
-    long long saveEvery_main  = saveEvery(nsteps,  snaps_main);
+    // ============================================================
+    //  Build interaction data
+    // ============================================================
+    const double bbEnergy = 1000.0;
+    vector<vector<double>> wD1, wDsq2, wD2, wDsq5;
+    vector<Triple> north0, east0;
+    vector<array<bool,4>> patchSlots;
+    double refComplexEnergy_full; // for exit detection
+    double refComplexEnergy_nobb; // for energy reporting (no backbone)
 
-    cout << "=== Circular Condensate Assembly Simulation (patchy model) ===" << endl;
-    cout << "  copies=" << nCopies
-         << "  t_equil=" << t_equil << " t_denat=" << t_denat << " steps=" << nsteps
-         << "  R_c=" << R_c << "  gamma0=" << gamma0
-         << "  gradient=" << useGradient << " stokes=" << useStokes
-         << "  coupling=" << couplingStr << "  J=" << J
-         << "  phi_rot=" << phi_rot << "  phi_reorient=" << phi_reorient << endl;
+    if (singleChain) {
+        buildCouplingMatrices_single(n0, path, J, wD1, wDsq2, wD2, wDsq5);
+        patchSlots            = buildPatchSlots_single(n0, path);
+        buildBackboneTriples_single(n0, nCopies, bbEnergy, north0, east0);
+        refComplexEnergy_full = referenceComplexEnergy_single(n0, path, J, bbEnergy);
+        refComplexEnergy_nobb = referenceComplexEnergyNoBB_single(n0, path, J);
+    } else {
+        buildCouplingMatrices_multi(J, wD1, wDsq2, wD2, wDsq5);
+        patchSlots            = buildPatchSlots_multi();
+        buildBackboneTriples_multi(nCopies, bbEnergy, north0, east0);
+        refComplexEnergy_full = referenceComplexEnergy_multi(J, bbEnergy);
+        refComplexEnergy_nobb = referenceComplexEnergyNoBB_multi(J);
+    }
 
-    const int    nParticles = nCopies * N0;
-    const double bbEnergy   = 1000.0;
+    int gridSize = singleChain ? (1 << mooreN) : 4;
+    int spacing  = gridSize + 3;
 
+    int nFoldingContacts = 0;
+    for (int i = 0; i < n0; i++)
+        for (int j = i+1; j < n0; j++)
+            if (wD1[i][j] != 0.0) nFoldingContacts++;
+
+    const int nParticles = nCopies * n0;
     const double R_large = max(6.0 * R_c, 150.0);
-    const double cx = R_large;
-    const double cy = R_large;
+    const double cx = R_large, cy = R_large;
     const double BOX = 2.0 * R_large;
+    const int    icx = (int)round(cx), icy = (int)round(cy);
 
     const unsigned int dimension       = 2;
     const double interactionRange      = 2.5;
@@ -668,22 +772,36 @@ int main(int argc, char** argv)
     const double interactionEnergy     = 0.0;
     const bool   isLattice             = true;
 
-    vector<vector<double>> wD1, wDsq2, wD2, wDsq5;
-    buildCouplingMatrices(J, wD1, wDsq2, wD2, wDsq5);
+    // Snapshot distribution
+    long long totalSteps  = t_equil + t_denat + nsteps;
+    long long snaps_equil = (totalSteps > 0 && t_equil > 0)
+                            ? max(1LL, nsnaps * t_equil / totalSteps) : 0;
+    long long snaps_denat = (totalSteps > 0 && t_denat > 0)
+                            ? max(1LL, nsnaps * t_denat / totalSteps) : 0;
+    long long snaps_main  = nsnaps - snaps_equil - snaps_denat;
+    if (snaps_main < 1) snaps_main = 1;
+    auto saveEvery = [](long long steps, long long snaps) -> long long {
+        return (steps <= 0 || snaps <= 0) ? steps : max(1LL, steps / snaps);
+    };
+    long long saveEvery_equil = saveEvery(t_equil, snaps_equil);
+    long long saveEvery_denat = saveEvery(t_denat, snaps_denat);
+    long long saveEvery_main  = saveEvery(nsteps,  snaps_main);
 
-    vector<Triple> north0, east0;
-    buildBackboneTriples(nCopies, bbEnergy, north0, east0);
+    cout << "=== Circular Condensate Assembly Simulation ===" << endl;
+    cout << "  mode=" << (singleChain ? "single-chain" : "multi-chain")
+         << "  N0=" << n0 << "  mooreN=" << mooreN
+         << "  foldingContacts=" << nFoldingContacts << endl;
+    cout << "  copies=" << nCopies
+         << "  t_equil=" << t_equil << " t_denat=" << t_denat << " steps=" << nsteps
+         << "  R_c=" << R_c << "  gamma0=" << gamma0
+         << "  gradient=" << useGradient << " stokes=" << useStokes
+         << "  coupling=" << couplingStr << "  J=" << J
+         << "  phi_rot=" << phi_rot << "  phi_reorient=" << phi_reorient << endl;
 
-    vector<vector<int>> bbPartners(N0);
+    vector<vector<int>> bbPartners(n0);
     double springK = 0.0;
-
-    Interactions interactions(nParticles, N0, north0, east0,
-                               wD1, wDsq2, wD2, wDsq5,
-                               springK, bbPartners);
-
-    // Directional patches: each particle has body-frame sticky faces pointing
-    // only toward native d=1 cross-type partners in the target complex.
-    auto patchSlots = buildPatchSlots();
+    Interactions interactions(nParticles, n0, north0, east0,
+                               wD1, wDsq2, wD2, wDsq5, springK, bbPartners);
     interactions.patchesEnabled = true;
     interactions.patchSlots     = patchSlots;
 
@@ -700,28 +818,24 @@ int main(int argc, char** argv)
 
     CondensateModel model(box, particles, cells,
                           maxInteractions, interactionEnergy, interactionRange,
-                          interactions,
-                          cx, cy, R_c,
-                          useGradient, couplingMode, gamma0);
+                          interactions, cx, cy, R_c, useGradient, couplingMode, gamma0);
+    model.singleChain  = singleChain;
 
-    // Start with fully assembled target complexes.
-    placeParticlesTargetComplex(particles, cells, box, nCopies, cx, cy);
+    cout << "Reference complex energy (full, g=1):    " << refComplexEnergy_full << endl;
+    cout << "Reference complex energy (no-BB, g=1):   " << refComplexEnergy_nobb << endl;
 
-    // Reference energy of one perfect complex (g=1, native geometry).
-    const double refComplexEnergy = referenceComplexEnergy(J, bbEnergy);
-    cout << "Reference perfect-complex energy (g=1): " << refComplexEnergy << endl;
+    placeParticlesTargetComplex(particles, cells, box, nCopies, n0, path, spacing, cx, cy);
 
-    // VMMC setup — use vectors for VLA-safety with runtime nParticles.
+    // VMMC setup
     vector<double> coordinates(dimension * nParticles);
     vector<double> orientations(dimension * nParticles);
-    // vector<bool> is a bitset specialisation with no .data(); use unique_ptr instead.
-    unique_ptr<bool[]> isIsotropic(new bool[nParticles]);
+    unique_ptr<bool[]> isIsotropic(new bool[nParticles]());  // false = patchy
+
     for (int i = 0; i < nParticles; i++) {
         coordinates[2*i]   = particles[i].position[0];
         coordinates[2*i+1] = particles[i].position[1];
         orientations[2*i]   = 1.0;
         orientations[2*i+1] = 0.0;
-        isIsotropic[i] = true;   // use isotropic cluster-rotation path; orientations updated via VMMC.cpp patch
     }
 
     double maxTrialTranslation = 1.5;
@@ -731,10 +845,12 @@ int main(int argc, char** argv)
     bool   isRepulsive         = true;
     int    nLatticeNeighbours  = 8;
 
-    // Queue-based injection state — declared before callbacks so they can be captured.
+    // Threading / injection state
     queue<vector<int>> injQueue;
     set<int>           staged;
     int stageX0 = (int)round(cx + BOX * 0.3);
+    vector<int> threadingChain;
+    int         threadingIdx = 0;
 
     using namespace std::placeholders;
     vmmc::CallbackFunctions callbacks;
@@ -747,53 +863,39 @@ int main(int argc, char** argv)
     callbacks.postMoveCallback =
         std::bind(&CondensateModel::applyPostMoveUpdates, &model, _1, _2, _3);
 
+    // Hard wall: centre lattice point (d²<0.5) is always forbidden.
+    // Staged particles are frozen.
     callbacks.boundaryCallback =
         [cx, cy, &staged](unsigned int pid, const double* pos, const double*) -> bool {
-            double dx = pos[0] - cx;
-            double dy = pos[1] - cy;
-            // Hard wall: only the absolute centre site (d²<0.5) is forbidden.
-            // The 4 cardinal ring sites are repulsive via nonPairwiseCallback instead,
-            // so that injected polymers can escape but free diffusion is blocked.
+            double dx = pos[0] - cx, dy = pos[1] - cy;
             if (dx*dx + dy*dy < 0.5) return true;
-            // Staged particles are frozen: reject any VMMC move proposal.
-            // This prevents drift that would cause staging-slot collisions.
             if (staged.count((int)pid)) return true;
             return false;
         };
 
-    // Soft repulsion at the 4 cardinal ring sites (N/E/S/W of centre).
-    // Returned energy is added to excessEnergy in the VMMC Metropolis step,
-    // so any cluster move that lands a particle on a ring site pays +1000 kT.
-    // Injection bypasses this via direct position assignment (not VMMC moves).
-    // This energy is excluded from system-energy reports (nonpairwise terms are
-    // never included in getSystemEnergy / getEnergyExcludingCore).
-    // Ring-site repulsion: must be >> kT=1 (to block free diffusion) but
-    // << backbone energy ~992 (so it can never compensate a backbone break).
-    // With 1000 the Metropolis bonus exactly cancelled backbone penalties,
-    // allowing backbone bonds to be severed when VMMC's cluster-size cutoff
-    // silently left a backbone partner outside the cluster without a frustrated
-    // link.  50 >> kT keeps the barrier effective; 992-50=942 >> 0 ensures
-    // any backbone break is rejected regardless of ring-site state.
-    const double ringRepulsion = 50.0;
-    int icx = (int)round(cx);
-    int icy = (int)round(cy);
-    callbacks.nonPairwiseCallback =
-        [icx, icy, ringRepulsion](unsigned int, const double* pos, const double*) -> double {
-            int px = (int)round(pos[0]) - icx;
-            int py = (int)round(pos[1]) - icy;
-            if ((px == 0 && (py == 1 || py == -1)) ||
-                (py == 0 && (px == 1 || px == -1)))
-                return ringRepulsion;
-            return 0.0;
-        };
-    callbacks.isNonPairwise = true;
+    if (!singleChain) {
+        // Multi-chain: soft repulsion at the 4 cardinal ring sites keeps the
+        // ring clear between injections.  Single-chain mode has no ring repulsion
+        // — the chain simply diffuses outward from the centre.
+        const double ringRepulsion = 50.0;
+        callbacks.nonPairwiseCallback =
+            [icx, icy, ringRepulsion](unsigned int, const double* pos, const double*) -> double {
+                int px = (int)round(pos[0]) - icx;
+                int py = (int)round(pos[1]) - icy;
+                if ((px == 0 && (py == 1 || py == -1)) ||
+                    (py == 0 && (px == 1 || px == -1)))
+                    return ringRepulsion;
+                return 0.0;
+            };
+        callbacks.isNonPairwise = true;
+    }
 
     vmmc::VMMC vmmc(nParticles, dimension, coordinates.data(), orientations.data(),
                      maxTrialTranslation, maxTrialRotation,
                      probTranslate, referenceRadius,
                      maxInteractions, &boxSize[0], isIsotropic.get(), isRepulsive,
                      callbacks, isLattice, nLatticeNeighbours,
-                     0.0 /*phi_sl: disabled in patchy model*/, N0, phi_reorient);
+                     0.0, n0, phi_reorient);
 
     vmmc.hydrAlpha = useStokes ? 1.0 : 0.0;
     if (seed != 0) vmmc.rng.setSeed(seed);
@@ -804,22 +906,18 @@ int main(int argc, char** argv)
     string statFile = outPrefix + "_stats.txt";
     FILE* fp_traj = fopen(trajFile.c_str(), "w");
     FILE* fp_stat = fopen(statFile.c_str(), "w");
-    if (!fp_traj || !fp_stat) {
-        cerr << "Cannot open output files.\n";
-        return 1;
-    }
-    fprintf(fp_stat, "# step  energy  exitedParticles  exitedPerfect  acceptRatio  phase  perfectExited  exitedFull  exitQuality\n");
+    if (!fp_traj || !fp_stat) { cerr << "Cannot open output files.\n"; return 1; }
+    fprintf(fp_stat, "# step  energy  exitedParticles  exitedPerfect  acceptRatio"
+                     "  phase  perfectExited  exitedFull  exitQuality\n");
 
-    // Set the phase gamma override before computing the initial energy so that
-    // the step-0 snapshot reflects the same coupling as the first phase.
     string firstPhase   = (t_equil > 0) ? "equil" : (t_denat > 0) ? "denat" : "main";
     int    firstOverride = (t_equil > 0) ? 0 : (t_denat > 0) ? 1 : -1;
     model.phaseGOverride = firstOverride;
 
-    double initEnergy = model.getSystemEnergy();
-    writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
-               0, initEnergy, 0, 0, 0, 0.0, couplingStr, gamma0, firstPhase,
-               refComplexEnergy, 0);
+    double initEnergy = model.getEnergyExcludingBackbone();
+    writeFrame(fp_traj, particles, nCopies, n0, singleChain,
+               R_c, cx, cy, 0, initEnergy, 0, 0, 0, 0.0,
+               couplingStr, gamma0, firstPhase, refComplexEnergy_nobb, 0);
     fprintf(fp_stat, "0  %.4f  0  0  0.0000  %s  0  0  0.0000\n",
             initEnergy, firstPhase.c_str());
 
@@ -831,48 +929,54 @@ int main(int argc, char** argv)
     long long lifetimeAccepts        = 0;
     long long lifetimeAttempts       = 0;
 
-    // Helper: run one phase of the simulation.
     auto runPhase = [&](long long phaseSteps, long long saveEveryN, const string& phaseName) {
         if (phaseSteps <= 0) return;
         cout << "--- Phase: " << phaseName << "  (" << phaseSteps << " steps) ---" << endl;
         for (long long s = 1; s <= phaseSteps; s++) {
             vmmc += nParticles;
-            ExitCounts exitResult = handleExitsAndQueue(model, particles, nParticles,
-                                                         cells, box, cx, cy, R_c, vmmc,
-                                                         injQueue, staged, stageX0,
-                                                         refComplexEnergy);
+
+            ExitCounts exitResult = handleExitsAndQueue(
+                model, particles, nParticles, n0, cells, box,
+                cx, cy, R_c, vmmc, injQueue, staged, stageX0,
+                refComplexEnergy_full, singleChain);
             totalParticlesExited   += exitResult.particles;
             totalPerfectExited     += exitResult.perfect;
             totalFullComplexExited += exitResult.fullComplex;
-            tryInjectNext(particles, nParticles, cells, box, vmmc, cx, cy, injQueue, staged);
-            globalStep++;
 
+            if (singleChain)
+                tryThreadNext(particles, nParticles, cells, box, vmmc,
+                              icx, icy, staged, threadingChain, threadingIdx, injQueue);
+            else
+                tryInjectNext(particles, nParticles, cells, box, vmmc,
+                              cx, cy, injQueue, staged);
+
+            globalStep++;
             bool doSave     = (s % saveEveryN == 0) || (s == phaseSteps);
             bool doProgress = (s % max(1LL, phaseSteps/10) == 0);
 
             if (doSave || doProgress) {
-                double energy      = model.getSystemEnergy();
+                double energy      = model.getEnergyExcludingBackbone();
                 double acceptRatio = (vmmc.getAttempts() > 0)
-                                     ? (double)vmmc.getAccepts() / (double)vmmc.getAttempts()
-                                     : 0.0;
+                    ? (double)vmmc.getAccepts() / (double)vmmc.getAttempts() : 0.0;
                 if (doSave) {
                     double exitQuality = (totalParticlesExited > 0)
-                        ? (double)(totalPerfectExited * N0) / (double)totalParticlesExited
-                        : 0.0;
-                    writeFrame(fp_traj, particles, nCopies, R_c, cx, cy,
-                               globalStep, energy,
+                        ? (double)(totalPerfectExited * n0) / (double)totalParticlesExited : 0.0;
+                    writeFrame(fp_traj, particles, nCopies, n0, singleChain,
+                               R_c, cx, cy, globalStep, energy,
                                totalParticlesExited, totalPerfectExited,
                                totalFullComplexExited, exitQuality,
-                               couplingStr, gamma0, phaseName, refComplexEnergy,
-                               (int)totalPerfectExited);
+                               couplingStr, gamma0, phaseName, refComplexEnergy_nobb,
+                               countAssembled(model, particles, nCopies, n0, refComplexEnergy_full));
                     fprintf(fp_stat, "%lld  %.4f  %lld  %lld  %.4f  %s  %lld  %lld  %.4f\n",
                             globalStep, energy,
                             totalParticlesExited, totalPerfectExited,
                             acceptRatio, phaseName.c_str(), totalPerfectExited,
-                            totalFullComplexExited, exitQuality);
+                            totalFullComplexExited,
+                            (totalParticlesExited > 0)
+                                ? (double)(totalPerfectExited * n0) / totalParticlesExited : 0.0);
                     lifetimeAccepts  += vmmc.getAccepts();
                     lifetimeAttempts += vmmc.getAttempts();
-                    vmmc.reset(); // windowed ratio: reset counters after each snapshot
+                    vmmc.reset();
                 }
                 if (doProgress) {
                     cout << "  [" << phaseName << "] step " << s << "/" << phaseSteps
@@ -885,39 +989,30 @@ int main(int argc, char** argv)
         }
     };
 
-    // Phase 1: Equilibration — g=1 everywhere, complexes are stable.
     model.phaseGOverride = 0;
     runPhase(t_equil, saveEvery_equil, "equil");
-
-    // Phase 2: Denaturation — g=0 everywhere, complexes fall apart.
     model.phaseGOverride = 1;
     runPhase(t_denat, saveEvery_denat, "denat");
-
-    // Phase 3: Main simulation — gradient active (or g=1 if --gradient not set).
     model.phaseGOverride = -1;
     runPhase(nsteps, saveEvery_main, "main");
 
     double simTime = (clock() - startTime) / (double)CLOCKS_PER_SEC;
     cout << "Done! Time = " << simTime << " s (" << simTime/60.0 << " min)" << endl;
-    cout << "Total particles exited: " << totalParticlesExited << endl;
-    cout << "Full-size complexes exited: " << totalFullComplexExited << endl;
-    cout << "Perfect complexes exited: " << totalPerfectExited << endl;
+    cout << "Total particles exited: "      << totalParticlesExited   << endl;
+    cout << "Full-size complexes exited: "  << totalFullComplexExited << endl;
+    cout << "Perfect complexes exited: "    << totalPerfectExited     << endl;
     {
-        double finalQuality = (totalParticlesExited > 0)
-            ? (double)(totalPerfectExited * N0) / (double)totalParticlesExited : 0.0;
-        cout << "Exit quality: " << finalQuality << endl;
+        double fq = (totalParticlesExited > 0)
+            ? (double)(totalPerfectExited * n0) / totalParticlesExited : 0.0;
+        cout << "Exit quality: " << fq << endl;
     }
     cout << "Acceptance ratio: "
-         << (lifetimeAttempts > 0 ? (double)lifetimeAccepts / (double)lifetimeAttempts : 0.0)
+         << (lifetimeAttempts > 0 ? (double)lifetimeAccepts / lifetimeAttempts : 0.0)
          << endl;
 
     fclose(fp_traj);
     fclose(fp_stat);
-
-    cout << "Trajectory: " << trajFile << endl;
-    cout << "Statistics: " << statFile << endl;
-    cout << "\nTo visualize:\n"
-         << "  python3 visualize_condensate.py " << trajFile << endl;
-
+    cout << "Trajectory: " << trajFile << "\nStatistics: " << statFile << endl;
+    cout << "\nTo visualize:\n  python3 visualize_condensate.py " << trajFile << endl;
     return EXIT_SUCCESS;
 }
